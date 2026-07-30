@@ -21,8 +21,29 @@ const DEFAULT_HCP_9   = [5,9,1,3,7,2,8,4,6];
 
 // WHS Course Handicap formula:
 // Course Handicap = round(Handicap Index × (Slope / 113) + (Course Rating − Par))
+// The (Rating − Par) term is what makes mixed tees work: a player off an easier
+// tee receives fewer strokes automatically, with no separate adjustment.
 function computeCourseHandicap(hi: number, slope: number, rating: number, par: number): number {
   return Math.round(hi * (slope / 113) + (rating - par));
+}
+
+interface TeeInfo {
+  tee: string;
+  courseRating: number;
+  slopeRating: number;
+  par: number;
+  yardage: number | null;
+}
+
+interface RosterPlayer {
+  playerId: string;
+  firstName: string;
+  lastName: string;
+  fullName: string;
+  ngapNumber: string;
+  handicapIndex: number | null;
+  defaultTee: string;
+  lastPlayed: string;
 }
 
 interface GameDef {
@@ -158,11 +179,17 @@ export default function NewRound() {
   // ── Players step ──────────────────────────────────────────────────────
   // Each player now stores a handicapIndex (raw) and courseHandicap (computed or entered)
   const [players, setPlayers] = useState([
-    { name: "Justin", handicapIndex: "", courseHandicap: "", position: 1, active: true },
-    { name: "",        handicapIndex: "",   courseHandicap: "", position: 2, active: false },
-    { name: "",        handicapIndex: "",   courseHandicap: "", position: 3, active: false },
-    { name: "",        handicapIndex: "",   courseHandicap: "", position: 4, active: false },
+    { name: "Justin", handicapIndex: "", courseHandicap: "", tee: "", playerId: "", position: 1, active: true },
+    { name: "",        handicapIndex: "",  courseHandicap: "", tee: "", playerId: "", position: 2, active: false },
+    { name: "",        handicapIndex: "",  courseHandicap: "", tee: "", playerId: "", position: 3, active: false },
+    { name: "",        handicapIndex: "",  courseHandicap: "", tee: "", playerId: "", position: 4, active: false },
   ]);
+
+  // ── Saved player roster, for the name dropdown ───────────────────────────
+  const { data: roster = [] } = useQuery<RosterPlayer[]>({
+    queryKey: ["/api/players"],
+    queryFn: async () => (await apiRequest("GET", "/api/players")).json(),
+  });
 
   // ── Pre-fill Player 1 HI from stored WHS index ───────────────────────────
   const { data: storedHI } = useQuery<{ value: string }>({
@@ -233,12 +260,30 @@ export default function NewRound() {
     );
   }
 
-  // ── WHS Handicap compute ─────────────────────────────────────────────────
-  function getComputedCourseHcp(hiStr: string): number | null {
-    if (!activeCourseRating || !activeSlopeRating || !activeCoursePar) return null;
+  // ── Tees available for the selected course ───────────────────────────────
+  const courseTees: TeeInfo[] = ((selectedCourse as any)?.tees ?? []) as TeeInfo[];
+  const hasTees = courseTees.length > 0;
+
+  /** The tee a player is on, falling back to the course default. */
+  function teeFor(teeName: string): TeeInfo | null {
+    if (!hasTees) return null;
+    return courseTees.find(t => t.tee === teeName) ?? courseTees[0];
+  }
+
+  // ── WHS Handicap compute, per player's own tee ───────────────────────────
+  function getComputedCourseHcpFor(hiStr: string, teeName: string): number | null {
     const hi = parseFloat(hiStr);
     if (isNaN(hi)) return null;
+    const t = teeFor(teeName);
+    if (t) return computeCourseHandicap(hi, t.slopeRating, t.courseRating, t.par);
+    // Manually entered course with no tee list
+    if (!activeCourseRating || !activeSlopeRating || !activeCoursePar) return null;
     return computeCourseHandicap(hi, activeSlopeRating, activeCourseRating, activeCoursePar);
+  }
+
+  /** Kept for the solo path and anywhere a tee isn't in scope. */
+  function getComputedCourseHcp(hiStr: string): number | null {
+    return getComputedCourseHcpFor(hiStr, players[0]?.tee ?? "");
   }
 
   // ── Course selection handler ─────────────────────────────────────────────
@@ -269,6 +314,17 @@ export default function NewRound() {
       setActiveCourseRating(course.courseRating);
       setActiveSlopeRating(course.slopeRating);
       setActiveCoursePar(course.par);
+
+      // Put each player on their usual tee, or the course default
+      const tees: TeeInfo[] = ((course as any).tees ?? []) as TeeInfo[];
+      if (tees.length) {
+        const names = tees.map(t => t.tee);
+        setPlayers(prev => prev.map(p => {
+          const saved = roster.find(r => r.fullName === p.name)?.defaultTee;
+          const keep = p.tee && names.includes(p.tee) ? p.tee : "";
+          return { ...p, tee: keep || (saved && names.includes(saved) ? saved : names[0]) };
+        }));
+      }
     }
   }
 
@@ -359,6 +415,30 @@ export default function NewRound() {
     });
   }
 
+  /**
+   * Typing or picking a name: if it matches someone on the roster, pull in
+   * their index and usual tee so adding a regular partner is one action.
+   */
+  function handlePlayerName(idx: number, value: string) {
+    const match = roster.find(r => r.fullName.toLowerCase() === value.trim().toLowerCase());
+    setPlayers(prev => {
+      const a = [...prev];
+      const teeNames = courseTees.map(t => t.tee);
+      a[idx] = {
+        ...a[idx],
+        name: value,
+        playerId: match?.playerId ?? "",
+        handicapIndex: match?.handicapIndex != null
+          ? String(match.handicapIndex)
+          : a[idx].handicapIndex,
+        tee: match?.defaultTee && teeNames.includes(match.defaultTee)
+          ? match.defaultTee
+          : (a[idx].tee || teeNames[0] || ""),
+      };
+      return a;
+    });
+  }
+
   function canProceedFromCourse() {
     if (courseSelectValue === "__new__") return false; // must save course first
     return courseName.trim().length > 0;
@@ -380,23 +460,34 @@ export default function NewRound() {
   };
 
   // ── Create round mutation ───────────────────────────────────────────────
+  /** One place that decides a player's tee, ratings and course handicap. */
+  function buildPlayerPayload(p: typeof players[number], i: number) {
+    const hi = parseFloat(p.handicapIndex);
+    const t = teeFor(p.tee);
+    const chp = getComputedCourseHcpFor(p.handicapIndex, p.tee)
+      ?? (p.courseHandicap !== "" ? parseInt(p.courseHandicap) : 0);
+    return {
+      name: p.name,
+      playerId: p.playerId || "",
+      tee: t?.tee ?? p.tee ?? "",
+      courseRating: t?.courseRating ?? activeCourseRating ?? null,
+      slopeRating: t?.slopeRating ?? activeSlopeRating ?? null,
+      par: t?.par ?? activeCoursePar ?? null,
+      handicapIndex: isNaN(hi) ? null : hi,
+      courseHandicap: chp,
+      position: i + 1,
+    };
+  }
+
   const createMutation = useMutation({
     mutationFn: async (solo: boolean = false) => {
       const gt = solo ? SOLO_GAME_TYPE : resolveGameType();
       let playersPayload;
       if (!solo && isTeamGame) {
         // Assign positions in order (1-based) — engine uses teamAssignment for grouping
-        playersPayload = activePlayers.map((p, i) => {
-          const hi = parseFloat(p.handicapIndex) || 0;
-          const chp = getComputedCourseHcp(p.handicapIndex) ?? (p.courseHandicap !== "" ? parseInt(p.courseHandicap) : 0);
-          return { name: p.name, handicapIndex: hi, courseHandicap: chp, position: i + 1 };
-        });
+        playersPayload = activePlayers.map((p, i) => buildPlayerPayload(p, i));
       } else {
-        playersPayload = activePlayers.map((p, i) => {
-          const hi = parseFloat(p.handicapIndex) || 0;
-          const chp = getComputedCourseHcp(p.handicapIndex) ?? (p.courseHandicap !== "" ? parseInt(p.courseHandicap) : 0);
-          return { name: p.name, handicapIndex: hi, courseHandicap: chp, position: i + 1 };
-        });
+        playersPayload = activePlayers.map((p, i) => buildPlayerPayload(p, i));
       }
 
       // Build teamAssignment for team games
@@ -881,9 +972,18 @@ export default function NewRound() {
               </div>
             )}
 
+            <datalist id="roster-names">
+              {roster.map(r => (
+                <option key={r.playerId} value={r.fullName}>
+                  {r.handicapIndex != null ? `HI ${r.handicapIndex}` : ""}
+                </option>
+              ))}
+            </datalist>
+
             {players.map((p, idx) => {
-              const computedHcp = getComputedCourseHcp(p.handicapIndex);
+              const computedHcp = getComputedCourseHcpFor(p.handicapIndex, p.tee);
               const hasAutoCompute = computedHcp !== null;
+              const playerTee = teeFor(p.tee);
               return (
                 <Card key={idx} className={`transition-all ${!p.active && idx > 0 ? "opacity-60" : ""}`}>
                   <CardContent className="pt-4 pb-4">
@@ -911,12 +1011,28 @@ export default function NewRound() {
                             <Label className="text-xs">Name {idx === 0 && <span className="text-muted-foreground">(you)</span>}</Label>
                             <Input
                               data-testid={`input-player-name-${idx+1}`}
+                              list={idx === 0 ? undefined : "roster-names"}
                               value={p.name}
                               disabled={idx === 0}
-                              onChange={e => updatePlayer(idx, "name", e.target.value)}
+                              onChange={e => handlePlayerName(idx, e.target.value)}
                               placeholder={`Player ${p.position} name`}
                             />
                           </div>
+                          {hasTees && (
+                            <div className="w-24 space-y-1">
+                              <Label className="text-xs">Tee</Label>
+                              <select
+                                data-testid={`select-player-tee-${idx+1}`}
+                                value={p.tee || courseTees[0]?.tee || ""}
+                                onChange={e => updatePlayer(idx, "tee", e.target.value)}
+                                className="w-full h-10 rounded-md border border-input bg-background px-2 text-sm"
+                              >
+                                {courseTees.map(t => (
+                                  <option key={t.tee} value={t.tee}>{t.tee}</option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
                           <div className="w-28 space-y-1">
                             <Label className="text-xs">
                               {hasAutoCompute ? "Handicap Index" : "Course HCP"}
@@ -941,7 +1057,9 @@ export default function NewRound() {
                             <span className="text-muted-foreground">Course HCP:</span>
                             <span className="font-bold text-primary">{computedHcp}</span>
                             <span className="text-muted-foreground ml-auto text-[10px]">
-                              WHS · Slope {activeSlopeRating} · CR {activeCourseRating}
+                              {playerTee
+                                ? `${playerTee.tee} · Slope ${playerTee.slopeRating} · CR ${playerTee.courseRating}`
+                                : `WHS · Slope ${activeSlopeRating} · CR ${activeCourseRating}`}
                             </span>
                           </div>
                         )}
@@ -1215,7 +1333,7 @@ export default function NewRound() {
               <Button
                 data-testid="btn-start-round"
                 disabled={!gameValid || createMutation.isPending}
-                onClick={() => createMutation.mutate()}
+                onClick={() => createMutation.mutate(false)}
                 className="flex-1 gap-2"
               >
                 {createMutation.isPending ? "Starting…" : "Start Round →"}

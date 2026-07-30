@@ -31,8 +31,8 @@ export interface Course {
 }
 export interface RosterPlayer {
   playerId: string; firstName: string; lastName: string; fullName: string;
-  ngapNumber: string; handicapIndex: number | null; hiUpdated: string;
-  lastPlayed: string;
+  ngapNumber: string; handicapIndex: number | null; defaultTee: string;
+  hiUpdated: string; lastPlayed: string;
 }
 export interface Round {
   id: string; courseId: string | null; courseName: string;
@@ -241,6 +241,7 @@ function fromSheetRoster(p: any): RosterPlayer {
     ngapNumber: String(p.ngap_number || ""),
     handicapIndex: p.handicap_index === "" || p.handicap_index == null
       ? null : Number(p.handicap_index),
+    defaultTee: String(p.default_tee || ""),
     hiUpdated: String(p.hi_updated || ""),
     lastPlayed: String(p.last_played || ""),
   };
