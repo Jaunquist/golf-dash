@@ -1,0 +1,152 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ================================================================
+   FAIRWAY — Golf Dashboard
+   Palette: Deep forest green + warm ivory + gold accent
+   Sports-precise, clean, data-dense
+   ================================================================ */
+
+@layer base {
+  :root {
+    /* Surfaces — warm ivory */
+    --background: 42 18% 96%;
+    --foreground: 120 12% 12%;
+
+    --card: 42 20% 97%;
+    --card-foreground: 120 12% 12%;
+
+    --popover: 42 20% 97%;
+    --popover-foreground: 120 12% 12%;
+
+    /* Primary — forest green */
+    --primary: 152 45% 22%;
+    --primary-foreground: 42 20% 97%;
+
+    /* Secondary — muted sage */
+    --secondary: 140 15% 88%;
+    --secondary-foreground: 152 45% 18%;
+
+    /* Muted */
+    --muted: 42 12% 90%;
+    --muted-foreground: 42 6% 52%;
+
+    /* Accent — gold */
+    --accent: 42 72% 48%;
+    --accent-foreground: 42 20% 10%;
+
+    /* Destructive */
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+
+    /* Border / input */
+    --border: 140 10% 82%;
+    --input: 140 10% 86%;
+    --ring: 152 45% 22%;
+
+    --radius: 0.5rem;
+
+    /* Chart colors */
+    --chart-1: 152 45% 22%;
+    --chart-2: 42 72% 48%;
+    --chart-3: 200 60% 42%;
+    --chart-4: 0 65% 45%;
+    --chart-5: 270 50% 45%;
+  }
+
+  .dark {
+    --background: 160 15% 8%;
+    --foreground: 42 15% 88%;
+
+    --card: 160 14% 10%;
+    --card-foreground: 42 15% 88%;
+
+    --popover: 160 14% 10%;
+    --popover-foreground: 42 15% 88%;
+
+    --primary: 152 42% 48%;
+    --primary-foreground: 160 15% 8%;
+
+    --secondary: 160 12% 16%;
+    --secondary-foreground: 152 42% 60%;
+
+    --muted: 160 10% 16%;
+    --muted-foreground: 160 5% 52%;
+
+    --accent: 42 72% 52%;
+    --accent-foreground: 42 20% 8%;
+
+    --destructive: 0 62% 45%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 160 10% 20%;
+    --input: 160 10% 18%;
+    --ring: 152 42% 48%;
+
+    --chart-1: 152 42% 55%;
+    --chart-2: 42 72% 55%;
+    --chart-3: 200 60% 55%;
+    --chart-4: 0 65% 55%;
+    --chart-5: 270 50% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'DM Sans', sans-serif;
+    min-height: 100dvh;
+    line-height: 1.5;
+  }
+
+  h1, h2, h3 {
+    font-family: 'Cabinet Grotesk', 'DM Sans', sans-serif;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+
+  .font-display {
+    font-family: 'Cabinet Grotesk', 'DM Sans', sans-serif;
+  }
+
+  /* Tabular numbers for scores */
+  .tabular {
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+
+  /* Score coloring */
+  .score-eagle { @apply text-blue-600 dark:text-blue-400 font-bold; }
+  .score-birdie { @apply text-green-600 dark:text-green-400 font-semibold; }
+  .score-par { @apply text-foreground; }
+  .score-bogey { @apply text-orange-500 dark:text-orange-400; }
+  .score-double { @apply text-red-500 dark:text-red-400 font-semibold; }
+  .score-worse { @apply text-red-700 dark:text-red-300 font-bold; }
+
+  /* Scorecard cell */
+  .score-cell {
+    @apply relative flex items-center justify-center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .putts-super {
+    @apply absolute top-0.5 right-0.5 text-[9px] text-muted-foreground leading-none;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Won hole indicator */
+  .hole-won {
+    @apply ring-2 ring-accent ring-inset;
+  }
+}
