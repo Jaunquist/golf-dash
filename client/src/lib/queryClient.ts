@@ -15,8 +15,66 @@
 
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-const ENDPOINT = import.meta.env.VITE_APPS_SCRIPT_URL as string;
-const SECRET = import.meta.env.VITE_APPS_SCRIPT_SECRET as string;
+// ── Backend configuration ──────────────────────────────────────────────────
+// Deliberately NOT baked into the build. A GitHub Pages site is public, so a
+// secret compiled into the bundle is readable by anyone who finds the URL.
+// Instead each device is configured once and the values live in localStorage.
+// The env vars remain as a convenience for local development.
+
+const CFG_KEY = "golf-dash-backend";
+
+function readConfig(): { url: string; secret: string } {
+  try {
+    const raw = localStorage.getItem(CFG_KEY);
+    if (raw) {
+      const c = JSON.parse(raw);
+      if (c.url && c.secret) return c;
+    }
+  } catch { /* fall through to env */ }
+  return {
+    url: (import.meta.env.VITE_APPS_SCRIPT_URL as string) || "",
+    secret: (import.meta.env.VITE_APPS_SCRIPT_SECRET as string) || "",
+  };
+}
+
+/** Store this device's backend details. Call from the console or a settings UI. */
+export function configureBackend(url: string, secret: string): void {
+  localStorage.setItem(CFG_KEY, JSON.stringify({ url: url.trim(), secret: secret.trim() }));
+  location.reload();
+}
+
+export function isConfigured(): boolean {
+  const c = readConfig();
+  return !!(c.url && c.secret);
+}
+
+export function clearBackendConfig(): void {
+  localStorage.removeItem(CFG_KEY);
+  location.reload();
+}
+
+if (typeof window !== "undefined") {
+  // Reachable from DevTools on any device: configureBackend("<url>", "<secret>")
+  (window as any).configureBackend = configureBackend;
+  (window as any).clearBackendConfig = clearBackendConfig;
+}
+
+let promptShown = false;
+
+/** Ask once, on first real use, rather than blocking module load. */
+function ensureConfig(): { url: string; secret: string } {
+  const c = readConfig();
+  if (c.url && c.secret) return c;
+  if (!promptShown && typeof window !== "undefined") {
+    promptShown = true;
+    const url = window.prompt("Golf Dash setup — paste your Apps Script Web App URL (ends in /exec):");
+    if (url) {
+      const secret = window.prompt("Now paste your shared secret:");
+      if (secret) configureBackend(url, secret);
+    }
+  }
+  throw new Error("Backend not configured on this device");
+}
 
 // ── Types (camelCase — what the pages already expect) ───────────────────────
 
@@ -92,9 +150,10 @@ const metaPut = (k: string, v: unknown) => op<void>(META, "readwrite", s => s.pu
 // request" and avoids a preflight, which Apps Script cannot answer.
 
 async function call<T>(action: string, payload: unknown = {}): Promise<T> {
-  const r = await fetch(ENDPOINT, {
+  const cfg = ensureConfig();
+  const r = await fetch(cfg.url, {
     method: "POST",
-    body: JSON.stringify({ secret: SECRET, action, payload }),
+    body: JSON.stringify({ secret: cfg.secret, action, payload }),
     redirect: "follow",
   });
   if (!r.ok) throw new Error(`${action}: HTTP ${r.status}`);
@@ -134,7 +193,7 @@ const pending = async () => (await allRounds()).filter(r => r.dirty).length;
 const announce = async () => { const n = await pending(); watchers.forEach(f => f(n)); };
 
 export async function flush(): Promise<void> {
-  if (syncing || !navigator.onLine || !ENDPOINT) return;
+  if (syncing || !navigator.onLine || !isConfigured()) return;
   syncing = true;
   try {
     for (const local of (await allRounds()).filter(r => r.dirty)) {

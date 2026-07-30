@@ -269,7 +269,7 @@ export default function Dashboard() {
     .filter(d => d.summary !== null)
     .sort((a, b) => a.round.date.localeCompare(b.round.date));
 
-  // ── Real WHS Handicap Index history from NGAP (member 1008002) ──────────
+  // ── Real WHS Handicap Index history from NGAP (member index) ──────────
   const NGAP_HI_HISTORY = [
     { date: "2025-04-13", hi: 30.2, course: "Hallow Ridge" },
     { date: "2025-04-17", hi: 31.2, course: "West Course" },
@@ -758,7 +758,7 @@ export default function Dashboard() {
                   <div>
                     <CardTitle className="text-sm font-semibold">Handicap Index Trend</CardTitle>
                     <p className="text-[10px] text-muted-foreground mt-0.5">
-                      Source: NGAP WHS · Member 1008002 · {hiSorted.length} scores
+                      Source: NGAP WHS · Member index · {hiSorted.length} scores
                       {lastScoreDate && <> · Last score: <span className="font-medium">{lastScoreDate}</span></>}
                     </p>
                   </div>
@@ -1103,7 +1103,7 @@ export default function Dashboard() {
           <AlertDialogHeader>
             <AlertDialogTitle>Sync from NGAP WHS?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will fetch your latest Handicap Index from the NGAP WHS portal (Member #1008002) and update the value here. Continue?
+              This will fetch your latest Handicap Index from the NGAP WHS portal (Member #index) and update the value here. Continue?
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
