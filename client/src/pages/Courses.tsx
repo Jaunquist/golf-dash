@@ -28,35 +28,60 @@ const DEFAULT_PARS_9  = [4,4,3,4,5,4,3,4,4];
 const DEFAULT_HCP_18  = [5,9,17,1,13,3,15,7,11, 6,16,2,14,4,18,8,12,10];
 const DEFAULT_HCP_9   = [5,9,1,3,7,2,8,4,6];
 
-interface CourseFormState {
-  name: string;
-  holes: 9 | 18;
+interface TeeFormState {
+  tee: string;
   courseRating: string;
   slopeRating: string;
   par: string;
+  yardage: string;
+}
+
+interface CourseFormState {
+  name: string;
+  holes: 9 | 18;
+  tees: TeeFormState[];
   pars: number[];
   holeHandicaps: number[];
+}
+
+// Common Philippine tee colours, hardest first
+const TEE_NAMES = ["Black", "Gold", "Blue", "White", "Silver", "Red"];
+
+function blankTee(name: string, holes: 9 | 18): TeeFormState {
+  return {
+    tee: name,
+    courseRating: holes === 18 ? "72.0" : "36.0",
+    slopeRating: "113",
+    par: holes === 18 ? "72" : "36",
+    yardage: "",
+  };
 }
 
 function defaultForm(holes: 9 | 18 = 18): CourseFormState {
   return {
     name: "",
     holes,
-    courseRating: holes === 18 ? "72.0" : "36.0",
-    slopeRating: "113",
-    par: holes === 18 ? "72" : "36",
+    tees: [blankTee("Blue", holes)],
     pars: holes === 18 ? [...DEFAULT_PARS_18] : [...DEFAULT_PARS_9],
     holeHandicaps: holes === 18 ? [...DEFAULT_HCP_18] : [...DEFAULT_HCP_9],
   };
 }
 
-function courseToForm(c: Course): CourseFormState {
+function courseToForm(c: any): CourseFormState {
+  const holes = (c.holes as 9 | 18) ?? 18;
+  const tees: TeeFormState[] = (c.tees ?? []).length
+    ? c.tees.map((t: any) => ({
+        tee: String(t.tee),
+        courseRating: String(t.courseRating),
+        slopeRating: String(t.slopeRating),
+        par: String(t.par),
+        yardage: t.yardage == null ? "" : String(t.yardage),
+      }))
+    : [blankTee("Blue", holes)];
   return {
     name: c.name,
-    holes: c.holes as 9 | 18,
-    courseRating: String(c.courseRating),
-    slopeRating: String(c.slopeRating),
-    par: String(c.par),
+    holes,
+    tees,
     pars: JSON.parse(c.pars),
     holeHandicaps: JSON.parse(c.holeHandicaps),
   };
@@ -87,8 +112,11 @@ function CourseForm({
     onChange({
       ...form,
       holes: n,
-      courseRating: n === 18 ? "72.0" : "36.0",
-      par: n === 18 ? "72" : "36",
+      tees: form.tees.map(t => ({
+        ...t,
+        courseRating: n === 18 ? "72.0" : "36.0",
+        par: n === 18 ? "72" : "36",
+      })),
       pars: n === 18 ? [...DEFAULT_PARS_18] : [...DEFAULT_PARS_9],
       holeHandicaps: n === 18 ? [...DEFAULT_HCP_18] : [...DEFAULT_HCP_9],
     });
@@ -107,9 +135,29 @@ function CourseForm({
   }
 
   const canSave = form.name.trim().length > 0
-    && parseFloat(form.courseRating) > 0
-    && parseInt(form.slopeRating) >= 55
-    && parseInt(form.slopeRating) <= 155;
+    && form.tees.length > 0
+    && form.tees.every(t =>
+         t.tee.trim().length > 0
+         && parseFloat(t.courseRating) > 0
+         && parseInt(t.slopeRating) >= 55
+         && parseInt(t.slopeRating) <= 155);
+
+  function updateTee(i: number, field: keyof TeeFormState, value: string) {
+    const next = [...form.tees];
+    next[i] = { ...next[i], [field]: value };
+    onChange({ ...form, tees: next });
+  }
+
+  function addTee() {
+    const used = form.tees.map(t => t.tee);
+    const nextName = TEE_NAMES.find(n => !used.includes(n)) ?? "";
+    onChange({ ...form, tees: [...form.tees, blankTee(nextName, form.holes)] });
+  }
+
+  function removeTee(i: number) {
+    if (form.tees.length <= 1) return;
+    onChange({ ...form, tees: form.tees.filter((_, j) => j !== i) });
+  }
 
   return (
     <div className="space-y-4">
@@ -144,42 +192,74 @@ function CourseForm({
         </div>
       </div>
 
-      {/* Rating / Slope / Par row */}
-      <div className="grid grid-cols-3 gap-3">
-        <div className="space-y-1">
-          <Label className="text-xs">Course Rating</Label>
-          <Input
-            data-testid="input-course-rating"
-            type="number"
-            step="0.1"
-            min={50}
-            max={80}
-            value={form.courseRating}
-            onChange={e => setField("courseRating", e.target.value)}
-          />
+      {/* Tees — one row per set of markers */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label className="text-xs">Tees</Label>
+          <button
+            type="button"
+            onClick={addTee}
+            className="text-xs font-semibold text-primary hover:underline"
+          >
+            + Add tee
+          </button>
         </div>
-        <div className="space-y-1">
-          <Label className="text-xs">Slope Rating</Label>
-          <Input
-            data-testid="input-slope-rating"
-            type="number"
-            min={55}
-            max={155}
-            value={form.slopeRating}
-            onChange={e => setField("slopeRating", e.target.value)}
-          />
+
+        <div className="grid grid-cols-[1fr_70px_60px_55px_28px] gap-2 px-1">
+          <span className="text-[10px] text-muted-foreground">Tee</span>
+          <span className="text-[10px] text-muted-foreground">Rating</span>
+          <span className="text-[10px] text-muted-foreground">Slope</span>
+          <span className="text-[10px] text-muted-foreground">Par</span>
+          <span />
         </div>
-        <div className="space-y-1">
-          <Label className="text-xs">Par</Label>
-          <Input
-            data-testid="input-par"
-            type="number"
-            min={27}
-            max={73}
-            value={form.par}
-            onChange={e => setField("par", e.target.value)}
-          />
-        </div>
+
+        {form.tees.map((t, i) => (
+          <div key={i} className="grid grid-cols-[1fr_70px_60px_55px_28px] gap-2 items-center">
+            <Input
+              list="tee-names"
+              value={t.tee}
+              onChange={e => updateTee(i, "tee", e.target.value)}
+              placeholder="Blue"
+              className="h-9"
+            />
+            <Input
+              type="number" step="0.1" min={50} max={80}
+              value={t.courseRating}
+              onChange={e => updateTee(i, "courseRating", e.target.value)}
+              className="h-9 tabular"
+            />
+            <Input
+              type="number" min={55} max={155}
+              value={t.slopeRating}
+              onChange={e => updateTee(i, "slopeRating", e.target.value)}
+              className="h-9 tabular"
+            />
+            <Input
+              type="number" min={27} max={73}
+              value={t.par}
+              onChange={e => updateTee(i, "par", e.target.value)}
+              className="h-9 tabular"
+            />
+            <button
+              type="button"
+              onClick={() => removeTee(i)}
+              disabled={form.tees.length <= 1}
+              className="text-muted-foreground hover:text-destructive disabled:opacity-30 flex justify-center"
+              title="Remove tee"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
+        ))}
+
+        <datalist id="tee-names">
+          {TEE_NAMES.map(n => <option key={n} value={n} />)}
+        </datalist>
+
+        <p className="text-[10px] text-muted-foreground">
+          Course rating and slope come from the scorecard and differ per tee.
+          Pars and stroke index below are shared across all tees.
+        </p>
       </div>
 
       {/* Per-hole pars / HCPs — collapsible */}
@@ -311,9 +391,13 @@ export default function Courses() {
       const r = await apiRequest("POST", "/api/courses", {
         name: form.name.trim(),
         holes: form.holes,
-        courseRating: parseFloat(form.courseRating) || 72.0,
-        slopeRating: parseInt(form.slopeRating) || 113,
-        par: parseInt(form.par) || (form.holes === 18 ? 72 : 36),
+        tees: form.tees.map(t => ({
+          tee: t.tee.trim(),
+          courseRating: parseFloat(t.courseRating) || 72.0,
+          slopeRating: parseInt(t.slopeRating) || 113,
+          par: parseInt(t.par) || (form.holes === 18 ? 72 : 36),
+          yardage: t.yardage === "" ? null : parseInt(t.yardage),
+        })),
         pars: JSON.stringify(form.pars.slice(0, form.holes)),
         holeHandicaps: JSON.stringify(form.holeHandicaps.slice(0, form.holes)),
       });
@@ -333,9 +417,13 @@ export default function Courses() {
       const r = await apiRequest("PATCH", `/api/courses/${id}`, {
         name: form.name.trim(),
         holes: form.holes,
-        courseRating: parseFloat(form.courseRating) || 72.0,
-        slopeRating: parseInt(form.slopeRating) || 113,
-        par: parseInt(form.par) || (form.holes === 18 ? 72 : 36),
+        tees: form.tees.map(t => ({
+          tee: t.tee.trim(),
+          courseRating: parseFloat(t.courseRating) || 72.0,
+          slopeRating: parseInt(t.slopeRating) || 113,
+          par: parseInt(t.par) || (form.holes === 18 ? 72 : 36),
+          yardage: t.yardage === "" ? null : parseInt(t.yardage),
+        })),
         pars: JSON.stringify(form.pars.slice(0, form.holes)),
         holeHandicaps: JSON.stringify(form.holeHandicaps.slice(0, form.holes)),
       });
@@ -576,11 +664,13 @@ export default function Courses() {
                   <div className="flex-1 min-w-0">
                     <div className="font-semibold text-sm leading-tight truncate">{course.name}</div>
                     <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-1">
-                      <span className="text-xs text-muted-foreground">{course.holes} holes</span>
                       <span className="text-xs text-muted-foreground">
-                        CR {course.courseRating} · Slope {course.slopeRating}
+                        {((course as any).tees ?? []).length
+                          ? (course as any).tees
+                              .map((t: any) => `${t.tee} ${t.courseRating}/${t.slopeRating}`)
+                              .join("  ·  ")
+                          : `CR ${course.courseRating} · Slope ${course.slopeRating}`}
                       </span>
-                      <span className="text-xs text-muted-foreground">Par {course.par}</span>
                     </div>
                     {/* Per-hole par summary */}
                     <div className="flex flex-wrap gap-1 mt-2">

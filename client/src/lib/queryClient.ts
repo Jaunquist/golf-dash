@@ -20,9 +20,19 @@ const SECRET = import.meta.env.VITE_APPS_SCRIPT_SECRET as string;
 
 // ── Types (camelCase — what the pages already expect) ───────────────────────
 
+export interface Tee {
+  tee: string; courseRating: number; slopeRating: number; par: number;
+  yardage: number | null;
+}
 export interface Course {
   id: string; name: string; holes: number; courseRating: number;
   slopeRating: number; par: number; pars: string; holeHandicaps: string;
+  tees: Tee[];
+}
+export interface RosterPlayer {
+  playerId: string; firstName: string; lastName: string; fullName: string;
+  ngapNumber: string; handicapIndex: number | null; hiUpdated: string;
+  lastPlayed: string;
 }
 export interface Round {
   id: string; courseId: string | null; courseName: string;
@@ -33,6 +43,8 @@ export interface Round {
 export interface RoundPlayer {
   id: string; roundId: string; name: string;
   handicapIndex: number | null; courseHandicap: number; position: number;
+  playerId?: string; tee?: string;
+  courseRating?: number | null; slopeRating?: number | null; par?: number | null;
 }
 export interface HoleScore {
   id: string; roundId: string; playerId: string;
@@ -91,6 +103,19 @@ async function call<T>(action: string, payload: unknown = {}): Promise<T> {
   return b.data as T;
 }
 
+/**
+ * WHS Course Handicap = HI x (Slope / 113) + (Course Rating - Par).
+ * The (CR - Par) term is what makes mixed tees work: a player off an easier tee
+ * gets fewer strokes automatically, with no separate adjustment.
+ */
+export function courseHandicapFor(
+  hi: number | null, slope: number | null,
+  courseRating: number | null, par: number | null,
+): number {
+  if (hi == null || slope == null || courseRating == null || par == null) return 0;
+  return Math.round(hi * (slope / 113) + (courseRating - par));
+}
+
 export const newId = () =>
   crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
@@ -140,8 +165,7 @@ if (typeof window !== "undefined") {
 function toSheetRound(r: Round) {
   return {
     id: r.id, date: r.date, course_name: r.courseName,
-    course_rating: r.courseRating, slope_rating: r.slopeRating,
-    holes: r.holes, par: r.par, game_type: r.gameType,
+    holes: r.holes, game_type: r.gameType,
     game_options: r.gameOptions, pars: r.pars ?? "[]",
     hole_handicaps: r.holeHandicaps ?? "[]", status: r.status,
   };
@@ -157,45 +181,91 @@ function toSheetPlayer(p: RoundPlayer, scores: HoleScore[]) {
     }
   });
   return {
-    id: p.id, name: p.name, handicap_index: p.handicapIndex,
+    id: p.id, player_id: p.playerId ?? "", name: p.name,
+    tee: p.tee ?? "",
+    course_rating: p.courseRating ?? "", slope_rating: p.slopeRating ?? "",
+    par: p.par ?? "",
+    handicap_index: p.handicapIndex,
     course_handicap: p.courseHandicap, position: p.position, strokes, putts,
   };
 }
 
 function fromSheetCourse(c: any): Course {
+  const tees: Tee[] = (c.tees || []).map((t: any) => ({
+    tee: String(t.tee),
+    courseRating: Number(t.course_rating) || 72,
+    slopeRating: Number(t.slope_rating) || 113,
+    par: Number(t.par) || 72,
+    yardage: t.yardage == null ? null : Number(t.yardage),
+  }));
+  // The first tee doubles as the course default, so older code paths that read
+  // a single rating off the course keep working.
+  const d = tees[0];
   return {
-    id: String(c.name), name: String(c.name),
+    id: String(c.course_name), name: String(c.course_name),
     holes: Number(c.holes) || 18,
-    courseRating: Number(c.course_rating) || 72,
-    slopeRating: Number(c.slope_rating) || 113,
-    par: Number(c.par) || 72,
+    courseRating: d ? d.courseRating : 72,
+    slopeRating: d ? d.slopeRating : 113,
+    par: d ? d.par : 72,
     pars: String(c.pars || "[]"),
     holeHandicaps: String(c.hole_handicaps || "[]"),
+    tees,
   };
 }
 
 function toSheetCourse(c: Partial<Course>) {
+  const tees = (c.tees && c.tees.length ? c.tees : [{
+    tee: "Blue",
+    courseRating: c.courseRating ?? 72,
+    slopeRating: c.slopeRating ?? 113,
+    par: c.par ?? 72,
+    yardage: null,
+  }]).map(t => ({
+    tee: t.tee, course_rating: t.courseRating,
+    slope_rating: t.slopeRating, par: t.par, yardage: t.yardage,
+  }));
   return {
-    name: c.name, holes: c.holes ?? 18, course_rating: c.courseRating ?? 72,
-    slope_rating: c.slopeRating ?? 113, par: c.par ?? 72,
+    course_name: c.name, holes: c.holes ?? 18,
     pars: c.pars ?? "[]", hole_handicaps: c.holeHandicaps ?? "[]",
+    tees,
+  };
+}
+
+function fromSheetRoster(p: any): RosterPlayer {
+  const first = String(p.first_name || "").trim();
+  const last = String(p.last_name || "").trim();
+  return {
+    playerId: String(p.player_id),
+    firstName: first, lastName: last,
+    fullName: [first, last].filter(Boolean).join(" "),
+    ngapNumber: String(p.ngap_number || ""),
+    handicapIndex: p.handicap_index === "" || p.handicap_index == null
+      ? null : Number(p.handicap_index),
+    hiUpdated: String(p.hi_updated || ""),
+    lastPlayed: String(p.last_played || ""),
   };
 }
 
 // ── Cached reference data ──────────────────────────────────────────────────
 
-interface Cache { courses: Course[]; settings: Record<string, string>; }
+interface Cache {
+  courses: Course[]; players: RosterPlayer[]; settings: Record<string, string>;
+}
 
 async function cache(force = false): Promise<Cache> {
   const held = await metaGet<Cache>("cache");
   if (held && !force) { void refreshCache(); return held; }
-  return (await refreshCache()) ?? held ?? { courses: [], settings: {} };
+  return (await refreshCache()) ?? held ?? { courses: [], players: [], settings: {} };
 }
 
 async function refreshCache(): Promise<Cache | null> {
   try {
-    const d = await call<{ courses: any[]; settings: Record<string, string> }>("bootstrap");
-    const next: Cache = { courses: d.courses.map(fromSheetCourse), settings: d.settings || {} };
+    const d = await call<{ courses: any[]; players: any[]; settings: Record<string, string> }>("bootstrap");
+    const next: Cache = {
+      courses: (d.courses || []).map(fromSheetCourse),
+      players: (d.players || []).map(fromSheetRoster),
+      settings: d.settings || {},
+    };
     await metaPut("cache", next);
     return next;
   } catch (e) {
@@ -250,6 +320,21 @@ export async function apiRequest(method: string, url: string, data?: unknown): P
     }
   }
 
+  // ── players roster ──
+  if (seg[1] === "players") {
+    if (method === "GET") return reply((await cache()).players);
+    if (method === "POST") {
+      const saved = await call<any>("savePlayer", {
+        first_name: body.firstName ?? body.first_name,
+        last_name: body.lastName ?? body.last_name,
+        ngap_number: body.ngapNumber ?? body.ngap_number ?? "",
+        handicap_index: body.handicapIndex ?? body.handicap_index ?? null,
+      });
+      await refreshCache();
+      return reply(fromSheetRoster(saved));
+    }
+  }
+
   // ── settings ──
   if (seg[1] === "settings" && seg[2]) {
     const c = await cache();
@@ -266,8 +351,18 @@ export async function apiRequest(method: string, url: string, data?: unknown): P
   if (seg[1] === "rounds") {
     if (method === "GET" && seg.length === 2) return reply(await listRounds());
 
-    if (method === "GET" && seg[2] === "justin")
-      return reply((await listRounds()).filter(r => r.status === "complete"));
+    if (method === "GET" && seg[2] === "justin") {
+      const bundles = await allRounds();
+      return reply(bundles.map(s2 => {
+        const me = s2.players.find(p => p.position === 1);
+        if (!me) return null;
+        return {
+          round: s2.round,
+          players: [me],
+          scores: s2.scores.filter(x => x.playerId === me.id),
+        };
+      }).filter(Boolean));
+    }
 
     if (method === "POST" && seg.length === 2) return reply(await createRound(body));
 
@@ -334,10 +429,14 @@ async function load(id: string): Promise<Stored | null> {
   if (local) return local;
   try {
     const r = await call<{ round: any; players: any[] }>("getRound", { roundId: id });
+    const p1 = (r.players || []).find((x: any) => Number(x.position) === 1) || r.players?.[0];
     const round: Round = {
       id: r.round.id, courseId: r.round.course_name, courseName: r.round.course_name,
-      courseRating: Number(r.round.course_rating), slopeRating: Number(r.round.slope_rating),
-      date: String(r.round.date), holes: Number(r.round.holes), par: Number(r.round.par),
+      // The round keeps player 1's ratings so existing scorecard code has values
+      courseRating: p1 ? Number(p1.course_rating) : null,
+      slopeRating: p1 ? Number(p1.slope_rating) : null,
+      par: p1 ? Number(p1.par) : null,
+      date: String(r.round.date), holes: Number(r.round.holes),
       gameType: String(r.round.game_type), gameOptions: String(r.round.game_options || "{}"),
       status: String(r.round.status || "active"),
       pars: String(r.round.pars || "[]"), holeHandicaps: String(r.round.hole_handicaps || "[]"),
@@ -347,6 +446,10 @@ async function load(id: string): Promise<Stored | null> {
     r.players.forEach(p => {
       players.push({
         id: String(p.id), roundId: id, name: String(p.name),
+        playerId: String(p.player_id || ""), tee: String(p.tee || ""),
+        courseRating: p.course_rating === "" || p.course_rating == null ? null : Number(p.course_rating),
+        slopeRating: p.slope_rating === "" || p.slope_rating == null ? null : Number(p.slope_rating),
+        par: p.par === "" || p.par == null ? null : Number(p.par),
         handicapIndex: p.handicap_index ?? null,
         courseHandicap: Number(p.course_handicap) || 0, position: Number(p.position) || 1,
       });
@@ -389,12 +492,24 @@ async function createRound(payload: any): Promise<{ round: Round; players: Round
     holeHandicaps: src.holeHandicaps ?? course?.holeHandicaps ?? "[]",
   };
 
-  const players: RoundPlayer[] = (payload.players ?? []).map((p: any, i: number) => ({
-    id: newId(), roundId: round.id, name: String(p.name ?? `Player ${i + 1}`),
-    handicapIndex: p.handicapIndex ?? null,
-    courseHandicap: Number(p.courseHandicap) || 0,
-    position: Number(p.position) || i + 1,
-  }));
+  const players: RoundPlayer[] = (payload.players ?? []).map((p: any, i: number) => {
+    // Each player's tee determines their own rating, slope and par
+    const t = course?.tees.find(x => x.tee === p.tee) ?? course?.tees[0];
+    const cr = p.courseRating ?? t?.courseRating ?? null;
+    const sl = p.slopeRating ?? t?.slopeRating ?? null;
+    const pr = p.par ?? t?.par ?? null;
+    const hi = p.handicapIndex == null ? null : Number(p.handicapIndex);
+    const chcp = p.courseHandicap != null && p.courseHandicap !== ""
+      ? Number(p.courseHandicap)
+      : courseHandicapFor(hi, sl, cr, pr);
+    return {
+      id: newId(), roundId: round.id, name: String(p.name ?? `Player ${i + 1}`),
+      playerId: p.playerId ?? "", tee: p.tee ?? t?.tee ?? "",
+      courseRating: cr, slopeRating: sl, par: pr,
+      handicapIndex: hi, courseHandicap: chcp,
+      position: Number(p.position) || i + 1,
+    };
+  });
 
   await save({ round, players, scores: [], dirty: true, touched: "" });
   return { round, players };
