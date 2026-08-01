@@ -436,6 +436,17 @@ export async function apiRequest(method: string, url: string, data?: unknown): P
     if (method === "GET" && seg.length === 2) return reply(await listRounds());
 
     if (method === "GET" && seg[2] === "justin") {
+      // Pull down any completed rounds this device hasn't seen, so stats and
+      // the round list match across phone and laptop.
+      try {
+        const remote = await call<{ rounds: any[] }>("bootstrap");
+        for (const r of (remote.rounds || [])) {
+          if (String(r.status) !== "complete") continue;
+          if (await getStored(String(r.id))) continue;
+          await load(String(r.id));      // fetches players and scores, caches locally
+        }
+      } catch { /* offline — use what we have */ }
+
       const bundles = await allRounds();
       return reply(bundles.map(s2 => {
         const me = s2.players.find(p => p.position === 1);
@@ -503,9 +514,41 @@ export async function apiRequest(method: string, url: string, data?: unknown): P
 
 // ── Round operations ───────────────────────────────────────────────────────
 
+/**
+ * Rounds from this device, merged with anything the Sheet knows about.
+ *
+ * IndexedDB is per-device, so a round entered on the phone is invisible on the
+ * laptop until we pull it down. Local copies always win, because they may hold
+ * unsynced edits; remote-only rounds are added as headers and hydrate fully
+ * when opened.
+ */
 async function listRounds(): Promise<Round[]> {
-  const all = await allRounds();
-  return all.map(s => s.round).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const local = await allRounds();
+  const byId = new Map<string, Round>();
+
+  local.forEach(s => byId.set(String(s.round.id), s.round));
+
+  try {
+    const remote = await call<{ rounds: any[] }>("bootstrap");
+    (remote.rounds || []).forEach(r => {
+      const id = String(r.id);
+      if (byId.has(id)) return;          // local wins — it may be dirty
+      byId.set(id, {
+        id, courseId: r.course_name, courseName: String(r.course_name || ""),
+        courseRating: null, slopeRating: null, par: null,
+        date: String(r.date || ""), holes: Number(r.holes) || 18,
+        gameType: String(r.game_type || ""),
+        gameOptions: String(r.game_options || "{}"),
+        status: String(r.status || "complete"),
+        pars: String(r.pars || "[]"),
+        holeHandicaps: String(r.hole_handicaps || "[]"),
+      });
+    });
+  } catch {
+    // Offline: local rounds are still the important ones
+  }
+
+  return [...byId.values()].sort((a, b) => String(b.date).localeCompare(String(a.date)));
 }
 
 async function load(id: string): Promise<Stored | null> {
