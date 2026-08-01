@@ -1,3 +1,4 @@
+import PerformancePanel from "@/components/PerformancePanel";
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
@@ -750,6 +751,7 @@ export default function Dashboard() {
                 </Card>
               </div>
             </div>
+<PerformancePanel />
 
             {/* Handicap Index Trend — real WHS data from NGAP */}
             <Card>

@@ -380,6 +380,30 @@ export async function apiRequest(method: string, url: string, data?: unknown): P
     }
   }
 
+  // ── trends and ghost rounds (backend-computed) ──
+  if (seg[1] === "trends" && method === "GET") {
+    const held = await metaGet<any>("trends");
+    try {
+      const fresh = await call<any>("trends");
+      await metaPut("trends", fresh);
+      return reply(fresh);
+    } catch (e) {
+      // Offline: serve the last copy rather than an empty chart
+      if (held) return reply(held);
+      return reply({ ngap: [], app: [], currentIndex: null, lowIndex: null, ngapSynced: null });
+    }
+  }
+
+  if (seg[1] === "ghost" && method === "GET") {
+    const courseName = decodeURIComponent(seg[2] || "");
+    const mode = url.includes("mode=recent") ? "recent" : "best";
+    try {
+      return reply(await call<any>("ghost", { courseName, mode }));
+    } catch {
+      return reply({ scores: {}, roundCount: 0, label: null });
+    }
+  }
+
   // ── players roster ──
   if (seg[1] === "players") {
     if (method === "GET") return reply((await cache()).players);

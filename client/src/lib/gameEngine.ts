@@ -2,7 +2,8 @@
  * Golf Game Engine
  * Calculates game results hole-by-hole for:
  *   best_ball, best_ball_pairs, high_low, high_low_pairs,
- *   niners (3 players), twelves (4 players), match_play, match_play_indiv
+ *   niners (3 players), twelves (4 players), match_play, match_play_indiv,
+ *   skins, stableford, and the two solo modes (no game / vs a ghost round)
  */
 
 export type GameType =
@@ -13,7 +14,11 @@ export type GameType =
   | "niners"
   | "twelves"
   | "match_play"
-  | "match_play_indiv";
+  | "match_play_indiv"
+  | "skins"
+  | "stableford"
+  | "solo_none"
+  | "solo_ghost";
 
 /**
  * scoringMode:
@@ -43,6 +48,46 @@ export interface GameOptions {
   // Solo/ghost flags (existing)
   solo?: boolean;
   ghost?: boolean;
+
+  // skins: carry a tied hole's skin forward onto the next hole
+  carryOver?: boolean;           // default true
+  skinValue?: number;            // points per skin, default 1
+
+  // stableford: points awarded relative to net par
+  stablefordPoints?: {
+    albatross?: number; eagle?: number; birdie?: number;
+    par?: number; bogey?: number; double?: number;
+  };
+  modifiedStableford?: boolean;  // aggressive scale used in some tournaments
+
+  // solo_ghost: the round being played against, per hole
+  ghostScores?: Record<number, number>;   // hole -> strokes
+  ghostLabel?: string;                    // e.g. "Best round · 12 Jul"
+}
+
+/** Standard WHS-style Stableford: points against net par. */
+const STABLEFORD_DEFAULT = {
+  albatross: 5, eagle: 4, birdie: 3, par: 2, bogey: 1, double: 0,
+};
+
+/** Modified Stableford rewards risk: bogeys cost you, eagles pay well. */
+const STABLEFORD_MODIFIED = {
+  albatross: 8, eagle: 5, birdie: 2, par: 0, bogey: -1, double: -3,
+};
+
+/** Points for one hole, given strokes relative to net par. */
+export function stablefordPointsFor(
+  toNetPar: number,
+  scale: { albatross?: number; eagle?: number; birdie?: number;
+           par?: number; bogey?: number; double?: number } = STABLEFORD_DEFAULT,
+): number {
+  const s = { ...STABLEFORD_DEFAULT, ...scale };
+  if (toNetPar <= -3) return s.albatross;
+  if (toNetPar === -2) return s.eagle;
+  if (toNetPar === -1) return s.birdie;
+  if (toNetPar === 0) return s.par;
+  if (toNetPar === 1) return s.bogey;
+  return s.double;   // double bogey or worse scores nothing (or a penalty)
 }
 
 export interface Player {
@@ -113,6 +158,11 @@ export function computeGameResults(
   const totalHoles = holes;
   const mode: ScoringMode = options.scoringMode ?? "net_auto";
 
+  // Skins: value riding on the current hole, grows when a hole is halved
+  const skinValue = options.skinValue ?? 1;
+  const carryOver = options.carryOver ?? true;
+  let carried = 0;
+
   for (let h = 1; h <= totalHoles; h++) {
     const holeIdx = h - 1;
     const par = pars[holeIdx] ?? 4;
@@ -162,6 +212,79 @@ export function computeGameResults(
             holeResult.note = "Tie";
           }
         }
+        break;
+      }
+
+      case "skins": {
+        // Outright low score wins the hole. A tie carries the skin forward, so
+        // a halved hole makes the next one worth more.
+        if (!anyNull && players.length >= 2) {
+          const sorted = [...players].sort((a, b) => playScores[a.id]! - playScores[b.id]!);
+          const lowest = playScores[sorted[0].id]!;
+          const outright = players.filter(p => playScores[p.id] === lowest);
+          const atStake = skinValue + carried;
+
+          if (outright.length === 1) {
+            holeResult.points[outright[0].id] = atStake;
+            holeResult.winners = [outright[0].id];
+            holeResult.note = carried > 0 ? `Won ${atStake} skins` : undefined;
+            carried = 0;
+          } else if (carryOver) {
+            carried = atStake;
+            holeResult.note = `Halved · ${atStake} carried`;
+          } else {
+            holeResult.note = "Halved";
+          }
+        }
+        break;
+      }
+
+      case "stableford": {
+        // Points against net par, so a blow-up hole costs you one hole's points
+        // rather than the whole round.
+        const scale = options.modifiedStableford
+          ? STABLEFORD_MODIFIED
+          : (options.stablefordPoints ?? STABLEFORD_DEFAULT);
+
+        let best = -Infinity;
+        players.forEach(p => {
+          const play = playScores[p.id];
+          if (play == null) return;
+          const pts = stablefordPointsFor(play - par, scale);
+          holeResult.points[p.id] = pts;
+          if (pts > best) best = pts;
+        });
+        if (best > -Infinity) {
+          holeResult.winners = players
+            .filter(p => playScores[p.id] != null && holeResult.points[p.id] === best)
+            .map(p => p.id);
+        }
+        break;
+      }
+
+      case "solo_ghost": {
+        // You against a past round. The ghost has no handicap applied — it is
+        // your own score on the same course, so gross against gross is fair.
+        const me = players[0];
+        const mine = me ? grossScores[me.id]?.[h] ?? null : null;
+        const ghost = options.ghostScores?.[h] ?? null;
+        if (me && mine != null && ghost != null) {
+          if (mine < ghost) {
+            holeResult.points[me.id] = 1;
+            holeResult.winners = [me.id];
+            holeResult.note = `Beat ghost by ${ghost - mine}`;
+          } else if (mine > ghost) {
+            holeResult.points[me.id] = -1;
+            holeResult.note = `Ghost by ${mine - ghost}`;
+          } else {
+            holeResult.note = "Halved";
+          }
+        }
+        break;
+      }
+
+      case "solo_none": {
+        // Just keeping score. No points, no comparison.
         break;
       }
 
@@ -369,4 +492,43 @@ export function scoreCssClass(strokes: number | null, par: number): string {
   if (diff === 1) return "score-bogey";
   if (diff === 2) return "score-double";
   return "score-worse";
+}
+
+/**
+ * Metadata for the game picker: label, player range, and a one-line summary.
+ * Keeping it here means the UI never has to hardcode which games exist.
+ */
+export const GAME_META: Record<GameType, {
+  label: string; min: number; max: number; blurb: string;
+}> = {
+  best_ball:        { label: "Best Ball", min: 2, max: 4,
+                      blurb: "Teams; the lowest score on each side wins the hole." },
+  best_ball_pairs:  { label: "Best Ball (Pairs)", min: 4, max: 4,
+                      blurb: "Two pairs, best ball each, with an optional second-score tiebreak." },
+  high_low:         { label: "High-Low", min: 2, max: 4,
+                      blurb: "Points for both the best and the worst score on each side." },
+  high_low_pairs:   { label: "High-Low (Pairs)", min: 4, max: 4,
+                      blurb: "High-Low played as two fixed pairs." },
+  match_play:       { label: "Match Play", min: 2, max: 4,
+                      blurb: "Hole by hole; most holes won takes the match." },
+  match_play_indiv: { label: "Match Play (Individual)", min: 2, max: 4,
+                      blurb: "Every player for themselves; low score takes the hole." },
+  niners:           { label: "Niners", min: 3, max: 3,
+                      blurb: "Nine points split across each hole between three players." },
+  twelves:          { label: "Twelves", min: 4, max: 4,
+                      blurb: "Twelve points split across each hole between four players." },
+  skins:            { label: "Skins", min: 2, max: 4,
+                      blurb: "Outright low score wins the hole; ties carry the skin forward." },
+  stableford:       { label: "Stableford", min: 1, max: 4,
+                      blurb: "Points against net par, so one bad hole costs less." },
+  solo_ghost:       { label: "Vs. Previous Round", min: 1, max: 1,
+                      blurb: "Play against your own past round on this course." },
+  solo_none:        { label: "Just Scoring", min: 1, max: 1,
+                      blurb: "No game — track strokes and putts only." },
+};
+
+/** Games playable with a given number of players. */
+export function gamesForPlayerCount(n: number): GameType[] {
+  return (Object.keys(GAME_META) as GameType[])
+    .filter(g => n >= GAME_META[g].min && n <= GAME_META[g].max);
 }

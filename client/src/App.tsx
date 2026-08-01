@@ -10,6 +10,7 @@ import Courses from "@/pages/Courses";
 import SharedScorecard from "@/pages/SharedScorecard";
 import NotFound from "@/pages/not-found";
 import { useOfflineToast } from "@/hooks/use-offline-toast";
+import SyncStatus from "@/components/SyncStatus";
 
 function AppInner() {
   useOfflineToast();
@@ -31,6 +32,7 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AppInner />
+      <SyncStatus />
       <Toaster />
     </QueryClientProvider>
   );
