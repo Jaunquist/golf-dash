@@ -501,13 +501,15 @@ export default function Scorecard() {
                   <div className="text-[9px] text-muted-foreground/60">prev.</div>
                 </td>
                 {holeList.map(h => {
-                  const ghostScore = ghostData.scores[h];
-                  if (!ghostScore) return <td key={h} className="text-center p-0.5"><span className="text-[10px] text-muted-foreground/40">—</span></td>;
-                  const cssClass = scoreCssClass(ghostScore.strokes, pars[h-1] ?? 4);
+                  const raw = ghostData.scores[h] as any;
+                  // Tolerate a bare number as well as {strokes, roundDate}
+                  const strokes = typeof raw === "number" ? raw : raw?.strokes;
+                  if (strokes == null) return <td key={h} className="text-center p-0.5"><span className="text-[10px] text-muted-foreground/40">—</span></td>;
+                  const cssClass = scoreCssClass(strokes, pars[h-1] ?? 4);
                   return (
                     <td key={h} className="text-center p-0.5">
                       <div className="w-9 h-10 mx-auto flex items-center justify-center">
-                        <span className={`font-bold text-sm tabular leading-none ${cssClass}`}>{ghostScore.strokes}</span>
+                        <span className={`font-bold text-sm tabular leading-none ${cssClass}`}>{strokes}</span>
                       </div>
                     </td>
                   );

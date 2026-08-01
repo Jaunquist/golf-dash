@@ -398,7 +398,15 @@ export async function apiRequest(method: string, url: string, data?: unknown): P
     const courseName = decodeURIComponent(seg[2] || "");
     const mode = url.includes("mode=recent") ? "recent" : "best";
     try {
-      return reply(await call<any>("ghost", { courseName, mode }));
+      const r = await call<any>("ghost", { courseName, mode });
+      // The backend sends bare numbers; the UI needs {strokes, roundDate}
+      const scores: Record<number, { strokes: number; roundDate: string }> = {};
+      Object.entries(r.scores || {}).forEach(([h, v]) => {
+        scores[Number(h)] = typeof v === "number"
+          ? { strokes: v, roundDate: r.label ?? "" }
+          : (v as any);
+      });
+      return reply({ ...r, scores });
     } catch {
       return reply({ scores: {}, roundCount: 0, label: null });
     }
@@ -698,18 +706,30 @@ async function patchPlayer(roundId: string, playerId: string, b: any): Promise<R
 }
 
 /** Best score per hole across completed rounds on this course. */
+/**
+ * Best score on each hole across completed rounds at this course.
+ *
+ * Each entry is an object, not a bare number: the Scorecard shows which round
+ * the ghost score came from, so the date has to travel with it.
+ */
 async function ghost(courseName: string) {
   const rounds = (await allRounds()).filter(
     s => s.round.courseName === courseName && s.round.status === "complete");
   if (!rounds.length) return { scores: {}, roundCount: 0 };
 
-  const best: Record<number, number> = {};
+  const best: Record<number, { strokes: number; roundDate: string }> = {};
   rounds.forEach(s => {
     const me = s.players.find(p => p.position === 1);
     if (!me) return;
-    s.scores.filter(x => x.playerId === me.id && x.strokes != null).forEach(x => {
-      if (best[x.hole] == null || x.strokes! < best[x.hole]) best[x.hole] = x.strokes!;
-    });
+    const date = String(s.round.date || "");
+    s.scores
+      .filter(x => x.playerId === me.id && x.strokes != null)
+      .forEach(x => {
+        const cur = best[x.hole];
+        if (!cur || x.strokes! < cur.strokes) {
+          best[x.hole] = { strokes: x.strokes!, roundDate: date };
+        }
+      });
   });
   return { scores: best, roundCount: rounds.length };
 }
