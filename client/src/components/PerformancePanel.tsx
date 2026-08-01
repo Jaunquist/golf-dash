@@ -37,10 +37,35 @@ interface Trends {
 }
 
 type Range = "365d" | "monthly" | "yearly" | "lifetime";
+type Series = "index" | "gross" | "net";
+
+const SERIES_META: Record<Series, { label: string; axis: string }> = {
+  index: { label: "Handicap Index", axis: "Index / differential" },
+  gross: { label: "Gross Score", axis: "Strokes" },
+  net:   { label: "Net Score", axis: "Net strokes" },
+};
+
+/** Bucket key for a date, given the aggregation mode. */
+function bucketOf(date: string, range: Range): string {
+  if (range === "monthly") return date.slice(0, 7);        // 2026-07
+  if (range === "yearly") return date.slice(0, 4);         // 2026
+  return date;                                             // raw
+}
+
+function bucketLabel(key: string, range: Range): string {
+  if (range === "monthly") {
+    const [y, m] = key.split("-");
+    return ["Jan","Feb","Mar","Apr","May","Jun",
+            "Jul","Aug","Sep","Oct","Nov","Dec"][Number(m) - 1] + " " + y.slice(2);
+  }
+  if (range === "yearly") return key;
+  return key.slice(5).replace("-", "/");
+}
 
 export default function PerformancePanel() {
   const [tab, setTab] = useState<"mine" | "ngap">("mine");
   const [range, setRange] = useState<Range>("365d");
+  const [series, setSeries] = useState<Series>("index");
   const [showNgap, setShowNgap] = useState(true);
   const [showMine, setShowMine] = useState(true);
 
@@ -52,28 +77,63 @@ export default function PerformancePanel() {
   const ngap = data?.ngap ?? [];
   const app = data?.app ?? [];
 
-  // ── Chart data: NGAP index as a line, your differentials as points ────────
+  // ── Chart data ───────────────────────────────────────────────────────────
+  // 365d and lifetime plot every round. Monthly and yearly average the values
+  // within each bucket, which is the point of those views — otherwise they
+  // would just be the same scatter over a longer window.
   const chart = useMemo(() => {
     const cutoff = new Date();
     if (range === "365d") cutoff.setFullYear(cutoff.getFullYear() - 1);
-    else if (range === "monthly") cutoff.setMonth(cutoff.getMonth() - 24);
-    else if (range === "yearly") cutoff.setFullYear(cutoff.getFullYear() - 10);
-    else cutoff.setFullYear(1970);
-
+    else cutoff.setFullYear(1900);            // monthly/yearly/lifetime: all data
     const within = (d: string) => new Date(d) >= cutoff;
-    const byDate: Record<string, any> = {};
 
-    ngap.filter(p => within(p.date)).forEach(p => {
-      byDate[p.date] = { ...(byDate[p.date] || {}), date: p.date, hi: p.hi, ngapCourse: p.course };
-    });
-    app.filter(p => within(p.date) && p.diff != null).forEach(p => {
-      byDate[p.date] = { ...(byDate[p.date] || {}), date: p.date, myDiff: p.diff, myCourse: p.course };
+    const buckets: Record<string, {
+      key: string; ngapVals: number[]; myVals: number[];
+      course: string; date: string;
+    }> = {};
+
+    const touch = (date: string) => {
+      const key = bucketOf(date, range);
+      if (!buckets[key]) {
+        buckets[key] = { key, ngapVals: [], myVals: [], course: "", date };
+      }
+      return buckets[key];
+    };
+
+    if (series === "index") {
+      ngap.filter(p => within(p.date)).forEach(p => {
+        const b = touch(p.date);
+        b.ngapVals.push(p.hi);
+        b.course = b.course || p.course;
+      });
+    }
+
+    app.filter(p => within(p.date)).forEach(p => {
+      const v = series === "index" ? p.diff
+              : series === "gross" ? p.gross
+              : (p.hi != null && p.gross != null ? p.gross - Math.round(p.hi) : null);
+      if (v == null) return;
+      const b = touch(p.date);
+      b.myVals.push(v);
+      b.course = p.course || b.course;
     });
 
-    return Object.values(byDate)
-      .sort((a: any, b: any) => a.date.localeCompare(b.date))
-      .map((d: any) => ({ ...d, label: d.date.slice(5).replace("-", "/") }));
-  }, [ngap, app, range]);
+    const avg = (a: number[]) =>
+      a.length ? Math.round((a.reduce((x, y) => x + y, 0) / a.length) * 10) / 10 : null;
+
+    return Object.values(buckets)
+      .sort((a, b) => a.key.localeCompare(b.key))
+      .map(b => ({
+        date: b.date,
+        label: bucketLabel(b.key, range),
+        hi: avg(b.ngapVals),
+        myDiff: avg(b.myVals),
+        myCourse: b.course,
+        n: b.myVals.length,
+      }));
+  }, [ngap, app, range, series]);
+
+  const aggregated = range === "monthly" || range === "yearly";
 
   // ── Stats from your own rounds ───────────────────────────────────────────
   const stats = useMemo(() => {
@@ -156,6 +216,21 @@ export default function PerformancePanel() {
           </div>
         </div>
 
+        {/* ── What to plot ── */}
+        <div className="flex gap-1.5">
+          {(["index", "gross", "net"] as Series[]).map(sv => (
+            <button
+              key={sv}
+              onClick={() => setSeries(sv)}
+              className={`flex-1 px-2 py-1.5 rounded-md text-[11px] font-medium transition ${
+                series === sv ? "bg-primary/10 text-primary ring-1 ring-primary/30"
+                              : "bg-muted/50 text-muted-foreground hover:bg-muted"}`}
+            >
+              {SERIES_META[sv].label}
+            </button>
+          ))}
+        </div>
+
         {/* ── Range + series toggles ── */}
         <div className="flex flex-wrap items-center gap-1.5">
           {(["365d", "monthly", "yearly", "lifetime"] as Range[]).map(r => (
@@ -173,21 +248,23 @@ export default function PerformancePanel() {
 
           <span className="flex-1" />
 
-          <button
-            onClick={() => setShowNgap(v => !v)}
-            className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition ${
-              showNgap ? "text-foreground" : "text-muted-foreground/50"}`}
-          >
-            <span className="w-3 h-0.5 rounded" style={{ background: "#c9a227" }} />
-            NGAP index
-          </button>
+          {series === "index" && (
+            <button
+              onClick={() => setShowNgap(v => !v)}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition ${
+                showNgap ? "text-foreground" : "text-muted-foreground/50"}`}
+            >
+              <span className="w-3 h-0.5 rounded" style={{ background: "#c9a227" }} />
+              NGAP
+            </button>
+          )}
           <button
             onClick={() => setShowMine(v => !v)}
             className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition ${
               showMine ? "text-foreground" : "text-muted-foreground/50"}`}
           >
             <span className="w-2 h-2 rounded-full" style={{ background: "#1d5c3a" }} />
-            My differentials
+            My rounds
           </button>
         </div>
 
@@ -208,23 +285,27 @@ export default function PerformancePanel() {
                 <Tooltip
                   contentStyle={{ fontSize: 11, borderRadius: 8, border: "1px solid #0001" }}
                   formatter={(v: any, name: string) => [
-                    v, name === "hi" ? "NGAP index" : "My differential",
+                    v, name === "hi" ? "NGAP index"
+                       : series === "index" ? "My differential"
+                       : series === "gross" ? "Gross" : "Net",
                   ]}
                   labelFormatter={(l: string, p: any) => {
                     const d = p?.[0]?.payload;
                     return d ? `${d.date} · ${d.myCourse || d.ngapCourse || ""}` : l;
                   }}
                 />
-                {lowLine != null && (
+                {lowLine != null && series === "index" && (
                   <ReferenceLine y={lowLine} stroke="#00000030" strokeDasharray="3 3"
                                  label={{ value: `Low ${lowLine}`, fontSize: 9, position: "right" }} />
                 )}
-                {showNgap && (
+                {showNgap && series === "index" && (
                   <Line type="monotone" dataKey="hi" stroke="#c9a227" strokeWidth={2}
                         dot={false} connectNulls name="hi" />
                 )}
-                {showMine && (
-                  <Scatter dataKey="myDiff" fill="#1d5c3a" name="myDiff" />
+                {showMine && (aggregated
+                  ? <Line type="monotone" dataKey="myDiff" stroke="#1d5c3a" strokeWidth={2}
+                          dot={{ r: 3 }} connectNulls name="myDiff" />
+                  : <Scatter dataKey="myDiff" fill="#1d5c3a" name="myDiff" />
                 )}
               </ComposedChart>
             </ResponsiveContainer>

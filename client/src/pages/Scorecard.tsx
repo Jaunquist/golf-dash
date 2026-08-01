@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import HoleInputSheet from "@/components/HoleInputSheet";
 import { useParams, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -16,7 +16,7 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, CheckCircle2, Users, Trash2, UserPlus, Download, Ghost, Pencil, Link2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Users, Trash2, UserPlus, Download, Ghost, Pencil, Link2, Share2, StickyNote } from "lucide-react";
 import {
   computeGameResults, cumulativeTotals, scoreCssClass, handicapStrokesOnHole,
   type Player as GPlayer
@@ -89,7 +89,7 @@ export default function Scorecard() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
-  const roundId = id!;
+  const roundId = parseInt(id!);
 
   // Bottom sheet stepper state
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -112,6 +112,12 @@ export default function Scorecard() {
   // Hole HCP inline edits (in Edit Game Mode)
   const [editHoleHcps, setEditHoleHcps] = useState<number[]>([]);
   const [saveHcpToCourse, setSaveHcpToCourse] = useState(false);
+
+  // Round notes live in gameOptions so they need no schema change and travel
+  // with the round through the existing sync path.
+  const [notes, setNotes] = useState("");
+  const [notesSaved, setNotesSaved] = useState(true);
+  const [notesLoaded, setNotesLoaded] = useState(false);
   // Player HCP inline edits (in Players panel)
   const [editingPlayerHcp, setEditingPlayerHcp] = useState<number | null>(null); // playerId
   const [editPlayerHcpVal, setEditPlayerHcpVal] = useState("");
@@ -135,6 +141,28 @@ export default function Scorecard() {
 
   // Ghost data — fetched when round has ghost mode enabled
   const gameOptsRaw = data?.round ? JSON.parse(data.round.gameOptions) : {};
+
+  // Hydrate notes once the round arrives, without clobbering local edits
+  useEffect(() => {
+    if (!data?.round || notesLoaded) return;
+    setNotes(gameOptsRaw.notes ?? "");
+    setNotesLoaded(true);
+  }, [data?.round, notesLoaded, gameOptsRaw.notes]);
+
+  const saveNotes = useCallback(() => {
+    if (!data?.round) return;
+    const current = JSON.parse(data.round.gameOptions || "{}");
+    if ((current.notes ?? "") === notes) { setNotesSaved(true); return; }
+    apiRequest("PATCH", `/api/rounds/${roundId}/game`, {
+      gameType: data.round.gameType,
+      gameOptions: JSON.stringify({ ...current, notes }),
+    })
+      .then(() => {
+        setNotesSaved(true);
+        qc.invalidateQueries({ queryKey: [`/api/rounds/${roundId}`] });
+      })
+      .catch(() => toast({ title: "Couldn't save notes", variant: "destructive" }));
+  }, [data?.round, notes, roundId]);
   const isSoloGhost = gameOptsRaw?.solo === true && gameOptsRaw?.ghost === true;
   const { data: ghostData } = useQuery<{ scores: Record<number, { strokes: number; roundDate: string }>; roundCount: number }>({
     queryKey: ["/api/courses", data?.round?.courseId, "ghost"],
@@ -386,8 +414,10 @@ export default function Scorecard() {
           <thead>
             <tr className="bg-primary/8 border-b border-border">
               <th className="text-left px-2 py-2 font-semibold text-muted-foreground w-20 sticky left-0 bg-primary/8 z-10">Player</th>
-              {holeList.map(h => (
-                <th key={h} className="text-center px-1 py-2 font-semibold w-10">
+              {holeList.map((h, hi) => (
+                <th key={h}
+                    className={`text-center px-1 py-2 font-semibold w-10 ${
+                      hi % 2 === 1 ? "bg-primary/[0.06]" : ""}`}>
                   <div>{holeLabel(h)}</div>
                   <div className="text-muted-foreground font-normal">{pars[h-1]}</div>
                   <div className="text-[9px] text-muted-foreground/60 font-normal">H{holeHcps[h-1]}</div>
@@ -410,8 +440,9 @@ export default function Scorecard() {
                     <div className={`font-semibold truncate max-w-[70px] ${playerColor}`}>{player.name}</div>
                     <div className="text-[9px] text-muted-foreground">HCP {player.courseHandicap ?? "—"}</div>
                   </td>
-                  {holeList.map(h => {
+                  {holeList.map((h, hi) => {
                     const holeHcpRank = holeHcps[h-1] ?? h;
+                    const colTint = hi % 2 === 1 ? "bg-primary/[0.04]" : "";
                     const strVal = getCellValue(player.id, h, "strokes");
                     const puttsVal = getCellValue(player.id, h, "putts");
                     const strInt = strVal !== "" ? parseInt(strVal) : null;
@@ -422,7 +453,7 @@ export default function Scorecard() {
                     const isSheetActive = sheetOpen && sheetPlayerId === player.id && sheetHole === h;
 
                     return (
-                      <td key={h} className="text-center p-0.5">
+                      <td key={h} className={`text-center p-0.5 ${colTint}`}>
                         <div
                           className={`relative rounded w-9 h-10 mx-auto flex flex-col items-center justify-center cursor-pointer border
                             ${isWinner ? "border-accent bg-accent/10" : "border-transparent"}
@@ -666,7 +697,15 @@ export default function Scorecard() {
 
   // ── Share — programmatic canvas draw ──────────────────────────────────────
   // Layout: single wide table: label | F9 holes | F9-sub | DIV | B9 holes | B9-sub | TOT
-  const handleShare = async () => {
+  /**
+   * Render the scorecard to a PNG. `mode` decides what happens next:
+   *   "save"  — always download the file
+   *   "share" — open the OS share sheet, falling back to download
+   *
+   * These were previously one action, so on mobile (where navigator.share
+   * exists) it was impossible to just save a copy.
+   */
+  const handleShare = async (mode: "save" | "share" = "share") => {
     if (isSharing) return;
     setIsSharing(true);
     try {
@@ -1060,15 +1099,21 @@ export default function Scorecard() {
         if (!blob) { toast({ title: "Failed to create image", variant: "destructive" }); setIsSharing(false); return; }
         const filename = `fairway-${round.date}.png`;
         const file = new File([blob], filename, { type: "image/png" });
+        const download = () => {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url; a.download = filename; a.click();
+          URL.revokeObjectURL(url);
+          toast({ title: "Scorecard saved", description: filename });
+        };
+
         try {
-          if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+          const canShare = navigator.share && navigator.canShare &&
+                           navigator.canShare({ files: [file] });
+          if (mode === "share" && canShare) {
             await navigator.share({ title: `${round.courseName} · ${round.date}`, files: [file] });
           } else {
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url; a.download = filename; a.click();
-            URL.revokeObjectURL(url);
-            toast({ title: "Scorecard saved", description: "Image downloaded" });
+            download();
           }
         } catch (e: any) {
           if (e?.name !== "AbortError") toast({ title: "Sharing cancelled" });
@@ -1245,11 +1290,23 @@ export default function Scorecard() {
               size="sm"
               variant="outline"
               data-testid="btn-download-scorecard"
-              onClick={handleShare}
+              onClick={() => handleShare("save")}
               disabled={isSharing}
               className="gap-1 text-[11px] h-7 px-2"
+              title="Download the scorecard image"
             >
               <Download size={12} /> {isSharing ? "…" : "Save"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              data-testid="btn-share-scorecard-image"
+              onClick={() => handleShare("share")}
+              disabled={isSharing}
+              className="gap-1 text-[11px] h-7 px-2"
+              title="Share the scorecard image to another app"
+            >
+              <Share2 size={12} /> {isSharing ? "…" : "Send"}
             </Button>
           </div>
         </div>
@@ -1290,6 +1347,27 @@ export default function Scorecard() {
         <div>
           <h2 className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wider">Round Totals</h2>
           {renderTotals()}
+        </div>
+
+        {/* Notes — saved with the round, synced to the sheet */}
+        <div>
+          <h2 className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wider flex items-center gap-1.5">
+            <StickyNote size={12} /> Notes
+          </h2>
+          <textarea
+            data-testid="input-round-notes"
+            value={notes}
+            onChange={e => { setNotes(e.target.value); setNotesSaved(false); }}
+            onBlur={saveNotes}
+            placeholder="Wind off the left all day · new driver shaft · 3-putt on 4, 7, 12…"
+            rows={4}
+            className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm
+                       placeholder:text-muted-foreground/60 focus:outline-none
+                       focus:ring-2 focus:ring-primary/30 resize-y"
+          />
+          <p className="text-[10px] text-muted-foreground mt-1">
+            {notesSaved ? "Saved" : "Saves when you tap away"}
+          </p>
         </div>
       </main>
 
