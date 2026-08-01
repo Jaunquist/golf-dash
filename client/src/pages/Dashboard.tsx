@@ -567,11 +567,12 @@ export default function Dashboard() {
         status: d.round.status,
       };
     })
-    .filter(Boolean)
-    .sort((a, b) => b!.date.localeCompare(a!.date)) as {
-      id: number; date: string; location: string; gross: number;
-      courseHcp: number | null; net: number | null; totalPutts: number; status: string;
-    } & ({ netVsPar: number | null; totalPar: number })[];
+    // A type-guard filter tells TypeScript the nulls are gone, so the shape
+    // inferred from .map() survives. The old cast was both unnecessary and
+    // malformed: `A & B[]` parses as "A and an array of B", which discarded
+    // every property of A and caused ~20 downstream errors.
+    .filter((r): r is NonNullable<typeof r> => r !== null)
+    .sort((a, b) => b.date.localeCompare(a.date));
 
   return (
     <div className="min-h-screen bg-background">
