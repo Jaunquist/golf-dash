@@ -1,4 +1,3 @@
-import PerformancePanel from "@/components/PerformancePanel";
 import { useState, useRef, useCallback, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
@@ -23,6 +22,7 @@ import {
 } from "recharts";
 import type { Round, RoundPlayer, HoleScore } from "@shared/schema";
 import { handicapStrokesOnHole } from "@/lib/gameEngine";
+import PerformancePanel from "@/components/PerformancePanel";
 
 const GAME_LABELS: Record<string, string> = {
   best_ball: "Best Ball",
@@ -270,7 +270,7 @@ export default function Dashboard() {
     .filter(d => d.summary !== null)
     .sort((a, b) => a.round.date.localeCompare(b.round.date));
 
-  // ── Real WHS Handicap Index history from NGAP (member index) ──────────
+  // ── Real WHS Handicap Index history from NGAP (member 1008002) ──────────
   const NGAP_HI_HISTORY = [
     { date: "2025-04-13", hi: 30.2, course: "Hallow Ridge" },
     { date: "2025-04-17", hi: 31.2, course: "West Course" },
@@ -458,7 +458,7 @@ export default function Dashboard() {
   const hiMutation = useMutation({
     mutationFn: (value: string) =>
       apiRequest("PATCH", "/api/settings/handicap_index", { value }),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["/api/settings/handicap_index"] }); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/settings/handicap_index"] }); },
   });
 
   const [editingHI, setEditingHI] = useState(false);
@@ -478,8 +478,8 @@ export default function Dashboard() {
         if (data.status === "done") {
           clearInterval(interval);
           setNgapPolling(false);
-          queryClient.invalidateQueries({ queryKey: ["/api/settings/handicap_index"] });
-          queryClient.invalidateQueries({ queryKey: ["/api/settings/ngap_last_sync"] });
+          qc.invalidateQueries({ queryKey: ["/api/settings/handicap_index"] });
+          qc.invalidateQueries({ queryKey: ["/api/settings/ngap_last_sync"] });
           toast({ title: "WHS Index synced ✓", description: `Handicap Index updated to ${data.handicapIndex}`, duration: 5000 });
         } else if (data.status === "error") {
           clearInterval(interval);
@@ -571,7 +571,7 @@ export default function Dashboard() {
     .sort((a, b) => b!.date.localeCompare(a!.date)) as {
       id: number; date: string; location: string; gross: number;
       courseHcp: number | null; net: number | null; totalPutts: number; status: string;
-    } & { netVsPar: number | null; totalPar: number }[];
+    } & ({ netVsPar: number | null; totalPar: number })[];
 
   return (
     <div className="min-h-screen bg-background">
@@ -638,6 +638,9 @@ export default function Dashboard() {
                 ))}
               </div>
             )}
+
+            {/* Performance: my rounds vs the official NGAP record */}
+            <PerformancePanel />
 
             {/* KPI Cards */}
             <div>
@@ -751,7 +754,6 @@ export default function Dashboard() {
                 </Card>
               </div>
             </div>
-<PerformancePanel />
 
             {/* Handicap Index Trend — real WHS data from NGAP */}
             <Card>
@@ -760,7 +762,7 @@ export default function Dashboard() {
                   <div>
                     <CardTitle className="text-sm font-semibold">Handicap Index Trend</CardTitle>
                     <p className="text-[10px] text-muted-foreground mt-0.5">
-                      Source: NGAP WHS · Member index · {hiSorted.length} scores
+                      Source: NGAP WHS · Member 1008002 · {hiSorted.length} scores
                       {lastScoreDate && <> · Last score: <span className="font-medium">{lastScoreDate}</span></>}
                     </p>
                   </div>
@@ -1105,7 +1107,7 @@ export default function Dashboard() {
           <AlertDialogHeader>
             <AlertDialogTitle>Sync from NGAP WHS?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will fetch your latest Handicap Index from the NGAP WHS portal (Member #index) and update the value here. Continue?
+              This will fetch your latest Handicap Index from the NGAP WHS portal (Member #1008002) and update the value here. Continue?
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
