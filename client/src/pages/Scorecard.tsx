@@ -89,7 +89,8 @@ export default function Scorecard() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
   const qc = useQueryClient();
-  const roundId = parseInt(id!);
+  // Round IDs are client-generated UUIDs, not numbers — parseInt would give NaN
+  const roundId = id!;
 
   // Bottom sheet stepper state
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -181,7 +182,7 @@ export default function Scorecard() {
   });
 
   const saveMutation = useMutation({
-    mutationFn: async ({ playerId, hole, strokes, putts }: { playerId: number; hole: number; strokes: number | null; putts: number | null }) => {
+    mutationFn: async ({ playerId, hole, strokes, putts }: { playerId: string; hole: number; strokes: number | null; putts: number | null }) => {
       const r = await apiRequest("PUT", `/api/rounds/${roundId}/scores`, { playerId, hole, strokes, putts });
       return r.json();
     },
@@ -234,7 +235,7 @@ export default function Scorecard() {
 
   // Remove player mutation
   const removePlayerMutation = useMutation({
-    mutationFn: async (playerId: number) => {
+    mutationFn: async (playerId: string) => {
       const r = await apiRequest("DELETE", `/api/rounds/${roundId}/players/${playerId}`);
       return r.json();
     },
@@ -247,7 +248,7 @@ export default function Scorecard() {
 
   // Update player HCP mutation
   const updatePlayerHcpMutation = useMutation({
-    mutationFn: async ({ playerId, courseHandicap }: { playerId: number; courseHandicap: number }) => {
+    mutationFn: async ({ playerId, courseHandicap }: { playerId: string; courseHandicap: number }) => {
       const r = await apiRequest("PATCH", `/api/rounds/${roundId}/players/${playerId}`, { courseHandicap });
       return r.json();
     },
@@ -301,7 +302,7 @@ export default function Scorecard() {
   });
 
   // Open sheet for a specific player + hole
-  const openSheet = useCallback((playerId: number, hole: number) => {
+  const openSheet = useCallback((playerId: string, hole: number) => {
     setSheetPlayerId(playerId);
     setSheetHole(hole);
     setSheetOpen(true);
@@ -385,14 +386,14 @@ export default function Scorecard() {
   const front = Array.from({ length: Math.min(9, holes) }, (_, i) => i + 1);
   const back = holes === 18 ? Array.from({ length: 9 }, (_, i) => i + 10) : [];
 
-  function getCellValue(playerId: number, hole: number, field: "strokes" | "putts"): string {
+  function getCellValue(playerId: string, hole: number, field: "strokes" | "putts"): string {
     const s = scoreLookup[`${playerId}_${hole}`];
     if (!s) return "";
     const v = field === "strokes" ? s.strokes : s.putts;
     return v == null ? "" : String(v);
   }
 
-  function getSectionTotal(playerId: number, holeList: number[], field: "strokes" | "putts"): number | null {
+  function getSectionTotal(playerId: string, holeList: number[], field: "strokes" | "putts"): number | null {
     let total = 0;
     let hasAny = false;
     for (const h of holeList) {
@@ -406,7 +407,7 @@ export default function Scorecard() {
     return holeList.reduce((s, h) => s + (pars[h-1] ?? 4), 0);
   }
 
-  function getNetTotal(playerId: number, holeList: number[]): { net: number; playedPar: number } | null {
+  function getNetTotal(playerId: string, holeList: number[]): { net: number; playedPar: number } | null {
     const player = players.find(p => p.id === playerId);
     if (!player) return null;
     let total = 0, hasAny = false, playedPar = 0;
