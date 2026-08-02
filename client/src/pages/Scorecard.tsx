@@ -131,12 +131,19 @@ export default function Scorecard() {
   const scorecardRef = useRef<HTMLDivElement>(null);
   const [isSharing, setIsSharing] = useState(false);
 
-  const { data, isLoading } = useQuery<{ round: Round; players: RoundPlayer[]; scores: HoleScore[] }>({
+  const { data, isLoading, error } = useQuery<{ round: Round; players: RoundPlayer[]; scores: HoleScore[] }>({
     queryKey: ["/api/rounds", roundId],
     queryFn: async () => {
       const r = await apiRequest("GET", `/api/rounds/${roundId}`);
-      return r.json();
+      const body = await r.json();
+      // A 404 body is still valid JSON, so without this check the component
+      // renders with round === undefined and crashes on round.pars.
+      if (!r.ok || !body?.round) {
+        throw new Error(body?.error || `Round not found (${r.status})`);
+      }
+      return body;
     },
+    retry: 1,
   });
 
   // Ghost data — fetched when round has ghost mode enabled
@@ -326,7 +333,16 @@ export default function Scorecard() {
       <Skeleton className="h-64 w-full" />
     </div>
   );
-  if (!data) return <div className="p-8 text-center text-muted-foreground">Round not found.</div>;
+  if (error || !data?.round) return (
+    <div className="p-8 text-center space-y-3">
+      <p className="text-muted-foreground">
+        {error instanceof Error ? error.message : "Round not found."}
+      </p>
+      <Button variant="outline" size="sm" onClick={() => navigate("/")}>
+        Back to dashboard
+      </Button>
+    </div>
+  );
 
   const { round, players, scores } = data;
   const pars: number[] = JSON.parse(round.pars);
