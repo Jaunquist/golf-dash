@@ -23,6 +23,7 @@ import {
 
 interface NgapPoint {
   date: string; hi: number; diff: number | null;
+  gross: number | null; net: number | null;
   course: string; counted: boolean;
 }
 interface AppPoint {
@@ -32,8 +33,8 @@ interface AppPoint {
 }
 interface Trends {
   ngap: NgapPoint[]; app: AppPoint[];
-  currentIndex: number | null; lowIndex: number | null;
-  ngapSynced: string | null;
+  currentIndex: number | null; currentIndexUpdated: string | null;
+  lowIndex: number | null; ngapSynced: string | null;
 }
 
 type Range = "365d" | "monthly" | "yearly" | "lifetime";
@@ -100,13 +101,15 @@ export default function PerformancePanel() {
       return buckets[key];
     };
 
-    if (series === "index") {
-      ngap.filter(p => within(p.date)).forEach(p => {
-        const b = touch(p.date);
-        b.ngapVals.push(p.hi);
-        b.course = b.course || p.course;
-      });
-    }
+    ngap.filter(p => within(p.date)).forEach(p => {
+      const v = series === "index" ? p.hi
+              : series === "gross" ? p.gross
+              : p.net;
+      if (v == null) return;
+      const b = touch(p.date);
+      b.ngapVals.push(v);
+      b.course = b.course || p.course;
+    });
 
     app.filter(p => within(p.date)).forEach(p => {
       const v = series === "index" ? p.diff
@@ -203,7 +206,7 @@ export default function PerformancePanel() {
             <p className="text-[11px] text-muted-foreground">
               {tab === "mine"
                 ? `${app.length} round${app.length === 1 ? "" : "s"} logged in this app`
-                : `${ngap.length} scores on NGAP${data?.ngapSynced ? ` · synced ${data.ngapSynced}` : ""}`}
+                : `${ngap.length} scores on NGAP${data?.ngapSynced ? ` · synced ${String(data.ngapSynced).slice(0, 10)}` : ""}`}
             </p>
           </div>
           <div className="text-right">
@@ -213,6 +216,11 @@ export default function PerformancePanel() {
             <div className="text-[10px] text-muted-foreground">
               Index{lowLine != null ? ` · low ${lowLine}` : ""}
             </div>
+            {data?.currentIndexUpdated && (
+              <div className="text-[9px] text-muted-foreground/70">
+                as of {data.currentIndexUpdated}
+              </div>
+            )}
           </div>
         </div>
 
@@ -248,7 +256,7 @@ export default function PerformancePanel() {
 
           <span className="flex-1" />
 
-          {series === "index" && (
+          {(
             <button
               onClick={() => setShowNgap(v => !v)}
               className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition ${
@@ -285,9 +293,11 @@ export default function PerformancePanel() {
                 <Tooltip
                   contentStyle={{ fontSize: 11, borderRadius: 8, border: "1px solid #0001" }}
                   formatter={(v: any, name: string) => [
-                    v, name === "hi" ? "NGAP index"
-                       : series === "index" ? "My differential"
-                       : series === "gross" ? "Gross" : "Net",
+                    v, name === "hi"
+                        ? (series === "index" ? "NGAP index"
+                           : series === "gross" ? "NGAP gross" : "NGAP net")
+                        : (series === "index" ? "My differential"
+                           : series === "gross" ? "My gross" : "My net"),
                   ]}
                   labelFormatter={(l: string, p: any) => {
                     const d = p?.[0]?.payload;
@@ -298,9 +308,11 @@ export default function PerformancePanel() {
                   <ReferenceLine y={lowLine} stroke="#00000030" strokeDasharray="3 3"
                                  label={{ value: `Low ${lowLine}`, fontSize: 9, position: "right" }} />
                 )}
-                {showNgap && series === "index" && (
-                  <Line type="monotone" dataKey="hi" stroke="#c9a227" strokeWidth={2}
-                        dot={false} connectNulls name="hi" />
+                {showNgap && (
+                  (series === "index" || aggregated)
+                    ? <Line type="monotone" dataKey="hi" stroke="#c9a227" strokeWidth={2}
+                            dot={aggregated ? { r: 3 } : false} connectNulls name="hi" />
+                    : <Scatter dataKey="hi" fill="#c9a227" name="hi" />
                 )}
                 {showMine && (aggregated
                   ? <Line type="monotone" dataKey="myDiff" stroke="#1d5c3a" strokeWidth={2}

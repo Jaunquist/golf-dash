@@ -504,12 +504,29 @@ export async function apiRequest(method: string, url: string, data?: unknown): P
 
   // ── NGAP — no scraper any more; the index lives in Settings ──
   if (seg[1] === "ngap") {
-    if (path.endsWith("/sync/status")) return reply({ status: "idle", message: "Manual entry" });
+    // Sync is synchronous through Apps Script, so there is no job to poll
+    if (path.endsWith("/sync/status")) return reply({ status: "idle" });
+
     if (method === "POST") {
-      const c = await cache();
-      const hi = c.settings["handicap_index"];
-      return reply({ ok: !!hi, handicapIndex: hi ? Number(hi) : null,
-                     message: hi ? `Handicap Index ${hi}` : "Set your index in Settings" });
+      try {
+        // Actually contacts ngapwhs.com, rather than echoing the cached value
+        const r = await call<{ handicapIndex: number; updated: string }>("ngapIndex");
+        await refreshCache();
+        return reply({
+          ok: true,
+          handicapIndex: r.handicapIndex,
+          updated: r.updated,
+          message: `Handicap Index ${r.handicapIndex}`,
+        });
+      } catch (e: any) {
+        const c = await cache();
+        const hi = c.settings["handicap_index"];
+        return reply({
+          ok: false,
+          handicapIndex: hi ? Number(hi) : null,
+          message: String(e?.message || e),
+        }, 200);
+      }
     }
   }
 
