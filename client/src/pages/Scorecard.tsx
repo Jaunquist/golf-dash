@@ -728,19 +728,22 @@ export default function Scorecard() {
     if (isSharing) return;
     setIsSharing(true);
     try {
-      const DPR      = 3;    // ← higher resolution for legibility when zooming
-      const COL_W    = 34;   // hole column width
-      const SUB_W    = 44;   // F9/B9 subtotal column width (distinct style)
-      const ROW_H    = 48;   // player row height
-      const LABEL_W  = 88;   // player label column
-      const DIV_W    = 6;    // thin gap between F9 block and B9 block
-      const TOT_W    = 64;   // total column (gross + net)
-      const PAD      = 14;
-      const HEADER_H = 58;
-      const TH_H     = 36;
+      // Sized so an 18-hole card is legible on a phone without pinch-zooming.
+      // Everything below is roughly 1.9x the old layout.
+      const DPR      = 3;
+      const COL_W    = 62;   // hole column width
+      const SUB_W    = 80;   // F9/B9 subtotal column
+      const ROW_H    = 84;   // player row height
+      const LABEL_W  = 170;  // player label column
+      const DIV_W    = 12;   // gap between the F9 and B9 blocks
+      const TOT_W    = 118;  // total column (gross + net)
+      const PAD      = 26;
+      const HEADER_H = 108;
+      const TH_H     = 62;
       const GHOST_ROW_H   = isSoloGhost ? ROW_H : 0;
-      const POINTS_ROW_H  = isSoloRound ? 0 : 26;
-      const SCORE_ROW_H   = (!isSoloRound && isTeamGame) ? 28 : 0; // game score summary row
+      const POINTS_ROW_H  = isSoloRound ? 0 : 52;
+      const SCORE_ROW_H   = (!isSoloRound && isTeamGame) ? 52 : 0;
+      const RESULT_H      = isSoloRound ? 0 : 108;  // winner banner at the foot
 
       const front9 = Array.from({ length: Math.min(9, holes) }, (_, i) => i + 1);
       const back9  = holes === 18 ? Array.from({ length: 9 }, (_, i) => i + 10) : [];
@@ -755,7 +758,7 @@ export default function Scorecard() {
       const canvasW = tableW + PAD * 2;
 
       const tableH = TH_H + players.length * ROW_H + GHOST_ROW_H + POINTS_ROW_H + SCORE_ROW_H;
-      const canvasH = HEADER_H + PAD + tableH + PAD + 18;
+      const canvasH = HEADER_H + PAD + tableH + (RESULT_H ? PAD + RESULT_H : 0) + PAD + 34;
 
       const canvas = document.createElement("canvas");
       canvas.width  = canvasW * DPR;
@@ -788,7 +791,7 @@ export default function Scorecard() {
 
       function drawScoreCell(cx: number, cy: number, strokes: number | null, par: number, putts: number | null) {
         const { fill, stroke1, stroke2, fg } = scoreStyle(strokes, par);
-        const R = 11;
+        const R = 21;
         if (fill) {
           ctx.fillStyle = fill;
           ctx.beginPath();
@@ -809,17 +812,43 @@ export default function Scorecard() {
         }
         ctx.textAlign = "center";
         if (strokes != null) {
-          ctx.fillStyle = fg; ctx.font = `bold 11px system-ui, sans-serif`;
-          ctx.fillText(String(strokes), cx, cy + 4);
+          ctx.fillStyle = fg; ctx.font = `bold 20.9px system-ui, sans-serif`;
+          ctx.fillText(String(strokes), cx, cy + 8);
           if (putts != null) {
-            ctx.fillStyle = MUTED; ctx.font = `6.5px system-ui, sans-serif`;
-            ctx.fillText(String(putts), cx + 9, cy - 4);
+            // Superscript: raised above the cap height of the stroke digit and
+            // set clearly smaller, so it reads as an annotation not a second score
+            ctx.fillStyle = MUTED;
+            ctx.font = `bold 12px system-ui, sans-serif`;
+            ctx.textAlign = "left";
+            ctx.fillText(String(putts), cx + 11, cy - 9);
+            ctx.textAlign = "center";
           }
         } else {
-          ctx.fillStyle = "rgba(138,128,112,0.3)"; ctx.font = `10px system-ui, sans-serif`;
-          ctx.fillText("—", cx, cy + 4);
+          ctx.fillStyle = "rgba(138,128,112,0.3)"; ctx.font = `19.0px system-ui, sans-serif`;
+          ctx.fillText("—", cx, cy + 8);
         }
         ctx.textAlign = "left";
+      }
+
+      /** A total with its putt count as a superscript, centred as a pair. */
+      function drawTotalWithPutts(cx: number, rowY: number,
+                                  gross: number | null, putts: number | null) {
+        const g = gross != null ? String(gross) : "—";
+        ctx.font = `bold 20.9px system-ui, sans-serif`;
+        const gW = ctx.measureText(g).width;
+        const p = putts != null ? String(putts) : "";
+        ctx.font = `bold 12px system-ui, sans-serif`;
+        const pW = p ? ctx.measureText(p).width + 3 : 0;
+
+        ctx.textAlign = "left";
+        const gx = cx - (gW + pW) / 2;
+        ctx.fillStyle = "#3a3530"; ctx.font = `bold 20.9px system-ui, sans-serif`;
+        ctx.fillText(g, gx, rowY + 38);
+        if (p) {
+          ctx.fillStyle = MUTED; ctx.font = `bold 12px system-ui, sans-serif`;
+          ctx.fillText(p, gx + gW + 3, rowY + 28);
+        }
+        ctx.textAlign = "center";
       }
 
       // x-center of a hole cell
@@ -845,12 +874,12 @@ export default function Scorecard() {
       // ── Header ──
       ctx.fillStyle = GREEN;
       ctx.fillRect(0, 0, canvasW, HEADER_H);
-      ctx.fillStyle = WHITE; ctx.font = `bold 14px system-ui, sans-serif`;
-      ctx.fillText(round.courseName, PAD, 23);
-      ctx.font = `10px system-ui, sans-serif`; ctx.fillStyle = "rgba(255,255,255,0.65)";
-      ctx.fillText(`${round.date}  ·  ${round.holes}H  ·  ${GAME_LABELS[round.gameType] || round.gameType}`, PAD, 39);
-      ctx.textAlign = "right"; ctx.font = `9px system-ui, sans-serif`; ctx.fillStyle = "rgba(255,255,255,0.5)";
-      ctx.fillText(players.map(p => p.name).join(" · "), canvasW - PAD, 31);
+      ctx.fillStyle = WHITE; ctx.font = `bold 26.6px system-ui, sans-serif`;
+      ctx.fillText(round.courseName, PAD, 44);
+      ctx.font = `19.0px system-ui, sans-serif`; ctx.fillStyle = "rgba(255,255,255,0.65)";
+      ctx.fillText(`${round.date}  ·  ${round.holes}H  ·  ${GAME_LABELS[round.gameType] || round.gameType}`, PAD, 74);
+      ctx.textAlign = "right"; ctx.font = `17.1px system-ui, sans-serif`; ctx.fillStyle = "rgba(255,255,255,0.5)";
+      ctx.fillText(players.map(p => p.name).join(" · "), canvasW - PAD, 60);
       ctx.textAlign = "left";
 
       let y = HEADER_H + PAD;
@@ -869,40 +898,40 @@ export default function Scorecard() {
       ctx.strokeStyle = BORDER; ctx.lineWidth = 0.5;
       ctx.strokeRect(PAD, y, tableW, TH_H);
 
-      ctx.fillStyle = MUTED; ctx.font = `bold 8px system-ui, sans-serif`;
-      ctx.fillText("Hole", PAD + 4, y + 14);
-      ctx.font = `7.5px system-ui, sans-serif`;
-      ctx.fillText("Par", PAD + 4, y + 26);
+      ctx.fillStyle = MUTED; ctx.font = `bold 15.2px system-ui, sans-serif`;
+      ctx.fillText("Hole", PAD + 8, y + 26);
+      ctx.font = `14.2px system-ui, sans-serif`;
+      ctx.fillText("Par", PAD + 8, y + 48);
 
       // Hole numbers + par
       allHoleList.forEach(h => {
         const cx = holeX(h);
         ctx.textAlign = "center";
-        ctx.fillStyle = "#3a3530"; ctx.font = `bold 8.5px system-ui, sans-serif`;
-        ctx.fillText(String(h), cx, y + 19);
-        ctx.fillStyle = MUTED; ctx.font = `7.5px system-ui, sans-serif`;
-        ctx.fillText(String(pars[h - 1] ?? 4), cx, y + 30);
+        ctx.fillStyle = "#3a3530"; ctx.font = `bold 16.1px system-ui, sans-serif`;
+        ctx.fillText(String(h), cx, y + 26);
+        ctx.fillStyle = MUTED; ctx.font = `14.2px system-ui, sans-serif`;
+        ctx.fillText(String(pars[h - 1] ?? 4), cx, y + 50);
         ctx.textAlign = "left";
       });
 
       // F9 sub header
       ctx.textAlign = "center";
-      ctx.fillStyle = GREEN; ctx.font = `bold 8px system-ui, sans-serif`;
-      ctx.fillText("F9", f9SubX, y + 14);
-      ctx.fillStyle = MUTED; ctx.font = `7px system-ui, sans-serif`;
-      ctx.fillText(String(front9.reduce((s, h) => s + (pars[h - 1] ?? 4), 0)), f9SubX, y + 26);
+      ctx.fillStyle = GREEN; ctx.font = `bold 15.2px system-ui, sans-serif`;
+      ctx.fillText("F9", f9SubX, y + 26);
+      ctx.fillStyle = MUTED; ctx.font = `13.3px system-ui, sans-serif`;
+      ctx.fillText(String(front9.reduce((s, h) => s + (pars[h - 1] ?? 4), 0)), f9SubX, y + 48);
       if (has18) {
-        ctx.fillStyle = GREEN; ctx.font = `bold 8px system-ui, sans-serif`;
-        ctx.fillText("B9", b9SubX, y + 14);
-        ctx.fillStyle = MUTED; ctx.font = `7px system-ui, sans-serif`;
-        ctx.fillText(String(back9.reduce((s, h) => s + (pars[h - 1] ?? 4), 0)), b9SubX, y + 26);
+        ctx.fillStyle = GREEN; ctx.font = `bold 15.2px system-ui, sans-serif`;
+        ctx.fillText("B9", b9SubX, y + 26);
+        ctx.fillStyle = MUTED; ctx.font = `13.3px system-ui, sans-serif`;
+        ctx.fillText(String(back9.reduce((s, h) => s + (pars[h - 1] ?? 4), 0)), b9SubX, y + 48);
       }
 
       // TOT header
-      ctx.fillStyle = MUTED; ctx.font = `bold 8px system-ui, sans-serif`;
-      ctx.fillText("Gross", totX, y + 15);
-      ctx.font = `7px system-ui, sans-serif`;
-      ctx.fillText("Net", totX, y + 27);
+      ctx.fillStyle = MUTED; ctx.font = `bold 15.2px system-ui, sans-serif`;
+      ctx.fillText("Gross", totX, y + 26);
+      ctx.font = `12px system-ui, sans-serif`;
+      ctx.fillText("sup. = putts", totX, y + 46);
       ctx.textAlign = "left";
 
       // Divider gap line
@@ -937,13 +966,13 @@ export default function Scorecard() {
 
         // Player name + HCP + team label
         ctx.fillStyle = PLAYER_C[pi] ?? GREEN;
-        ctx.font = `bold 9px system-ui, sans-serif`;
-        ctx.fillText(player.name, PAD + 4, y + 15);
-        ctx.fillStyle = MUTED; ctx.font = `7px system-ui, sans-serif`;
-        ctx.fillText(`HCP ${player.courseHandicap ?? "—"}`, PAD + 4, y + 25);
+        ctx.font = `bold 17.1px system-ui, sans-serif`;
+        ctx.fillText(player.name, PAD + 10, y + 28);
+        ctx.fillStyle = MUTED; ctx.font = `13.3px system-ui, sans-serif`;
+        ctx.fillText(`HCP ${player.courseHandicap ?? "—"}`, PAD + 10, y + 50);
         if (teamLabel && teamColor) {
-          ctx.fillStyle = teamColor; ctx.font = `bold 7px system-ui, sans-serif`;
-          ctx.fillText(teamLabel, PAD + 4, y + 36);
+          ctx.fillStyle = teamColor; ctx.font = `bold 13.3px system-ui, sans-serif`;
+          ctx.fillText(teamLabel, PAD + 10, y + 70);
         }
 
         // Score cells
@@ -956,28 +985,47 @@ export default function Scorecard() {
         const f9Gross = getSectionTotal(player.id, front9, "strokes");
         const f9Net   = getNetTotal(player.id, front9);
         ctx.textAlign = "center";
-        ctx.fillStyle = "#3a3530"; ctx.font = `bold 11px system-ui, sans-serif`;
-        ctx.fillText(f9Gross != null ? String(f9Gross) : "—", f9SubX, y + 20);
-        ctx.fillStyle = MUTED; ctx.font = `8px system-ui, sans-serif`;
-        ctx.fillText(f9Net != null ? `net ${f9Net.net}` : "", f9SubX, y + 33);
+        drawTotalWithPutts(f9SubX, y, f9Gross, getSectionTotal(player.id, front9, "putts"));
+        ctx.textAlign = "center";
+        ctx.fillStyle = MUTED; ctx.font = `15.2px system-ui, sans-serif`;
+        ctx.fillText(f9Net != null ? `net ${f9Net.net}` : "", f9SubX, y + 62);
 
         // B9 subtotal
         if (has18) {
           const b9Gross = getSectionTotal(player.id, back9, "strokes");
           const b9Net   = getNetTotal(player.id, back9);
-          ctx.fillStyle = "#3a3530"; ctx.font = `bold 11px system-ui, sans-serif`;
-          ctx.fillText(b9Gross != null ? String(b9Gross) : "—", b9SubX, y + 20);
-          ctx.fillStyle = MUTED; ctx.font = `8px system-ui, sans-serif`;
-          ctx.fillText(b9Net != null ? `net ${b9Net.net}` : "", b9SubX, y + 33);
+          drawTotalWithPutts(b9SubX, y, b9Gross, getSectionTotal(player.id, back9, "putts"));
+          ctx.textAlign = "center";
+          ctx.fillStyle = MUTED; ctx.font = `15.2px system-ui, sans-serif`;
+          ctx.fillText(b9Net != null ? `net ${b9Net.net}` : "", b9SubX, y + 62);
         }
 
         // TOT column: gross + net
         const grossTotal = getSectionTotal(player.id, allHoleList, "strokes");
         const netResult  = getNetTotal(player.id, allHoleList);
-        ctx.fillStyle = "#3a3530"; ctx.font = `bold 12px system-ui, sans-serif`;
-        ctx.fillText(grossTotal != null ? String(grossTotal) : "—", totX, y + 19);
-        ctx.fillStyle = MUTED; ctx.font = `9px system-ui, sans-serif`;
-        ctx.fillText(netResult != null ? String(netResult.net) : "—", totX, y + 33);
+        const puttTotal  = getSectionTotal(player.id, allHoleList, "putts");
+
+        // Gross with total putts as a superscript, matching the per-hole cells.
+        // Centre the pair rather than the number alone, or the gross drifts left.
+        const grossTxt = grossTotal != null ? String(grossTotal) : "—";
+        ctx.font = `bold 22.8px system-ui, sans-serif`;
+        const gW = ctx.measureText(grossTxt).width;
+        const supTxt = puttTotal != null ? String(puttTotal) : "";
+        ctx.font = `bold 13px system-ui, sans-serif`;
+        const sW = supTxt ? ctx.measureText(supTxt).width + 3 : 0;
+
+        ctx.textAlign = "left";
+        const gx = totX - (gW + sW) / 2;
+        ctx.fillStyle = "#3a3530"; ctx.font = `bold 22.8px system-ui, sans-serif`;
+        ctx.fillText(grossTxt, gx, y + 36);
+        if (supTxt) {
+          ctx.fillStyle = MUTED; ctx.font = `bold 13px system-ui, sans-serif`;
+          ctx.fillText(supTxt, gx + gW + 3, y + 25);
+        }
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = MUTED; ctx.font = `17.1px system-ui, sans-serif`;
+        ctx.fillText(netResult != null ? `net ${netResult.net}` : "—", totX, y + 62);
         ctx.textAlign = "left";
 
         // Divider gap
@@ -996,15 +1044,15 @@ export default function Scorecard() {
         shadeSubCols(y, ROW_H);
         ctx.strokeStyle = BORDER; ctx.lineWidth = 0.5;
         ctx.strokeRect(PAD, y, tableW, ROW_H);
-        ctx.fillStyle = MUTED; ctx.font = `bold 8px system-ui, sans-serif`;
-        ctx.fillText("Best", PAD + 4, y + ROW_H / 2 + 4);
+        ctx.fillStyle = MUTED; ctx.font = `bold 15.2px system-ui, sans-serif`;
+        ctx.fillText("Best", PAD + 10, y + ROW_H / 2 + 8);
         allHoleList.forEach(h => {
           const gs = ghostData.scores[h];
           if (!gs) return;
           const { fg } = scoreStyle(gs.strokes, pars[h - 1] ?? 4);
           ctx.textAlign = "center"; ctx.globalAlpha = 0.5;
-          ctx.fillStyle = fg; ctx.font = `bold 10px system-ui, sans-serif`;
-          ctx.fillText(String(gs.strokes), holeX(h), y + ROW_H / 2 + 4);
+          ctx.fillStyle = fg; ctx.font = `bold 19.0px system-ui, sans-serif`;
+          ctx.fillText(String(gs.strokes), holeX(h), y + ROW_H / 2 + 8);
           ctx.globalAlpha = 1; ctx.textAlign = "left";
         });
         if (has18) { ctx.fillStyle = BG; ctx.fillRect(divStartX, y, DIV_W, ROW_H); }
@@ -1018,8 +1066,8 @@ export default function Scorecard() {
         shadeSubCols(y, POINTS_ROW_H);
         ctx.strokeStyle = "rgba(29,92,58,0.2)"; ctx.lineWidth = 1;
         ctx.strokeRect(PAD, y, tableW, POINTS_ROW_H);
-        ctx.fillStyle = GREEN; ctx.font = `bold 8px system-ui, sans-serif`;
-        ctx.fillText("Pts", PAD + 4, y + POINTS_ROW_H / 2 + 3);
+        ctx.fillStyle = GREEN; ctx.font = `bold 15.2px system-ui, sans-serif`;
+        ctx.fillText("Hole won", PAD + 10, y + POINTS_ROW_H / 2 + 7);
 
         allHoleList.forEach(h => {
           const hr = holeResults.find(r => r.hole === h);
@@ -1035,11 +1083,11 @@ export default function Scorecard() {
               ? (ta2[sortedPlayers.findIndex(p => p.id === winner.id)] ?? (winner.position <= 2 ? 1 : 2))
               : (winner.position <= 2 ? 1 : 2);
             ctx.fillStyle = wTeam === 1 ? T1_C : wTeam === 3 ? "#ea580c" : T2_C;
-            ctx.font = `bold 7.5px system-ui, sans-serif`;
+            ctx.font = `bold 14.2px system-ui, sans-serif`;
             ctx.fillText(wTeam === 3 ? "Solo" : `T${wTeam}`, holeX(h), y + POINTS_ROW_H / 2 + 3);
           } else {
             ctx.fillStyle = PLAYER_C[pi2] ?? GREEN;
-            ctx.font = `bold 8px system-ui, sans-serif`;
+            ctx.font = `bold 15.2px system-ui, sans-serif`;
             ctx.fillText(winner.name.split(" ")[0], holeX(h), y + POINTS_ROW_H / 2 + 3);
           }
           ctx.textAlign = "left";
@@ -1047,11 +1095,11 @@ export default function Scorecard() {
 
         if (has18) { ctx.fillStyle = BG; ctx.fillRect(divStartX, y, DIV_W, POINTS_ROW_H); }
 
-        // Total pts in TOT column
-        const totalPts = Object.values(totals).reduce((s, v) => s + v, 0);
+        // Holes actually decided, rather than the meaningless sum of all points
+        const decided = holeResults.filter(r => r.winners.length > 0).length;
         ctx.textAlign = "center";
-        ctx.fillStyle = GREEN; ctx.font = `bold 10px system-ui, sans-serif`;
-        ctx.fillText(String(totalPts), totX, y + POINTS_ROW_H / 2 + 3);
+        ctx.fillStyle = MUTED; ctx.font = `bold 17px system-ui, sans-serif`;
+        ctx.fillText(`${decided}/${allHoleList.length}`, totX, y + POINTS_ROW_H / 2 + 7);
         ctx.textAlign = "left";
 
         y += POINTS_ROW_H;
@@ -1064,7 +1112,7 @@ export default function Scorecard() {
         ctx.strokeStyle = GREEN; ctx.lineWidth = 1;
         ctx.strokeRect(PAD, y, tableW, SCORE_ROW_H);
 
-        ctx.fillStyle = GREEN; ctx.font = `bold 8px system-ui, sans-serif`;
+        ctx.fillStyle = GREEN; ctx.font = `bold 15.2px system-ui, sans-serif`;
         ctx.fillText("Score", PAD + 4, y + SCORE_ROW_H / 2 + 3);
 
         // Build team totals
@@ -1100,7 +1148,7 @@ export default function Scorecard() {
           ctx.fillStyle = tColor;
           ctx.font = `bold ${isLeading ? 11 : 10}px system-ui, sans-serif`;
           ctx.fillText(`${tNum === 3 ? "Solo" : `T${tNum}`}: ${tPts}pts`, cx2, scoreRowTextY - 4);
-          ctx.font = `7px system-ui, sans-serif`; ctx.fillStyle = MUTED;
+          ctx.font = `13.3px system-ui, sans-serif`; ctx.fillStyle = MUTED;
           ctx.fillText(tNames, cx2, scoreRowTextY + 7);
           ctx.textAlign = "left";
         });
@@ -1108,8 +1156,86 @@ export default function Scorecard() {
         y += SCORE_ROW_H;
       }
 
+      // ── Result banner ──────────────────────────────────────────────────
+      // The scorecard says what everyone shot; this says who won. Without it
+      // a shared image makes you count chips to work out the result.
+      if (RESULT_H) {
+        y += PAD;
+        const bx = PAD, bw = tableW;
+
+        type Standing = { label: string; pts: number; colour: string };
+        let standings: Standing[] = [];
+
+        if (isTeamGame) {
+          const ta3: number[] | undefined = gameOpts?.teamAssignment;
+          const sortedP = [...players].sort((a, b) => a.position - b.position);
+          const byTeam: Record<number, number> = {};
+          players.forEach(p => {
+            const t = ta3 && ta3.length > 0
+              ? (ta3[sortedP.findIndex(x => x.id === p.id)] ?? (p.position <= 2 ? 1 : 2))
+              : (p.position <= 2 ? 1 : 2);
+            byTeam[t] = (byTeam[t] ?? 0) + (totals[p.id] ?? 0);
+          });
+          standings = Object.entries(byTeam).map(([t, pts]) => ({
+            label: Number(t) === 3 ? "Solo" : `Team ${t}`,
+            pts,
+            colour: Number(t) === 1 ? T1_C : Number(t) === 3 ? "#ea580c" : T2_C,
+          }));
+        } else {
+          standings = players.map((p, i) => ({
+            label: p.name,
+            pts: totals[p.id] ?? 0,
+            colour: PLAYER_C[i] ?? GREEN,
+          }));
+        }
+        standings.sort((a, b) => b.pts - a.pts);
+
+        const top = standings[0]?.pts ?? 0;
+        const leaders = standings.filter(x => x.pts === top && top > 0);
+        const drawn = leaders.length !== 1;
+
+        ctx.fillStyle = "rgba(29,92,58,0.06)";
+        ctx.beginPath();
+        (ctx as any).roundRect?.(bx, y, bw, RESULT_H, 12) || ctx.rect(bx, y, bw, RESULT_H);
+        ctx.fill();
+        ctx.strokeStyle = "rgba(29,92,58,0.18)"; ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        (ctx as any).roundRect?.(bx, y, bw, RESULT_H, 12) || ctx.rect(bx, y, bw, RESULT_H);
+        ctx.stroke();
+
+        ctx.fillStyle = MUTED; ctx.font = `bold 16px system-ui, sans-serif`;
+        ctx.fillText(GAME_LABELS[round.gameType] || round.gameType, bx + 20, y + 28);
+
+        ctx.fillStyle = drawn ? MUTED : GREEN;
+        ctx.font = `bold 34px system-ui, sans-serif`;
+        ctx.fillText(
+          top === 0 ? "No holes decided yet"
+            : drawn ? `All square · ${top} pts`
+            : `${leaders[0].label} wins · ${top} pts`,
+          bx + 20, y + 68);
+
+        // Every player or team, right-aligned, colour coded
+        ctx.textAlign = "right";
+        let sx = bx + bw - 20;
+        standings.slice().reverse().forEach(st => {
+          const txt = `${st.label} ${st.pts}`;
+          ctx.font = `bold 22px system-ui, sans-serif`;
+          const w = ctx.measureText(txt).width + 26;
+          ctx.fillStyle = st.pts === top && top > 0 ? st.colour : "rgba(138,128,112,0.35)";
+          ctx.beginPath();
+          (ctx as any).roundRect?.(sx - w, y + RESULT_H - 46, w, 34, 17)
+            || ctx.rect(sx - w, y + RESULT_H - 46, w, 34);
+          ctx.fill();
+          ctx.fillStyle = "#ffffff";
+          ctx.fillText(txt, sx - 13, y + RESULT_H - 22);
+          sx -= w + 10;
+        });
+        ctx.textAlign = "left";
+        y += RESULT_H;
+      }
+
       // ── Footer ──
-      ctx.fillStyle = MUTED; ctx.font = `8px system-ui, sans-serif`;
+      ctx.fillStyle = MUTED; ctx.font = `15.2px system-ui, sans-serif`;
       ctx.textAlign = "right";
       ctx.fillText("Golf Dash", canvasW - PAD, canvasH - 4);
       ctx.textAlign = "left";
