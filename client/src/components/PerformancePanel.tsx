@@ -23,11 +23,12 @@ import {
 
 interface NgapPoint {
   date: string; hi: number; diff: number | null;
-  gross: number | null; net: number | null;
+  gross: number | null; net: number | null; holes: number;
   course: string; counted: boolean;
 }
 interface AppPoint {
-  date: string; gross: number; adjusted: number | null; diff: number | null;
+  date: string; holes: number;
+  gross: number; adjusted: number | null; diff: number | null;
   hi: number | null; course: string; tee: string;
   putts: number | null; gir: number | null;
 }
@@ -39,6 +40,29 @@ interface Trends {
 
 type Range = "365d" | "monthly" | "yearly" | "lifetime";
 type Series = "index" | "gross" | "net";
+type HoleFilter = "18" | "9" | "all";
+
+/**
+ * Least-squares fit over the plotted points, so the trend line reflects what
+ * is actually on screen rather than the whole dataset.
+ */
+function trendPoints(vals: (number | null)[]): (number | null)[] {
+  const pts = vals.map((v, i) => ({ i, v })).filter(p => p.v != null) as
+    { i: number; v: number }[];
+  if (pts.length < 3) return vals.map(() => null);
+  const n = pts.length;
+  const sx = pts.reduce((a, p) => a + p.i, 0);
+  const sy = pts.reduce((a, p) => a + p.v, 0);
+  const sxy = pts.reduce((a, p) => a + p.i * p.v, 0);
+  const sxx = pts.reduce((a, p) => a + p.i * p.i, 0);
+  const denom = n * sxx - sx * sx;
+  if (!denom) return vals.map(() => null);
+  const slope = (n * sxy - sx * sy) / denom;
+  const intercept = (sy - slope * sx) / n;
+  const lo = pts[0].i, hi = pts[pts.length - 1].i;
+  return vals.map((_, i) =>
+    i >= lo && i <= hi ? Math.round((slope * i + intercept) * 10) / 10 : null);
+}
 
 const SERIES_META: Record<Series, { label: string; axis: string }> = {
   index: { label: "Handicap Index", axis: "Index / differential" },
@@ -69,6 +93,8 @@ export default function PerformancePanel() {
   const [series, setSeries] = useState<Series>("index");
   const [showNgap, setShowNgap] = useState(true);
   const [showMine, setShowMine] = useState(true);
+  const [holeFilter, setHoleFilter] = useState<HoleFilter>("18");
+  const [showTrend, setShowTrend] = useState(true);
 
   const { data, isLoading } = useQuery<Trends>({
     queryKey: ["/api/trends"],
@@ -101,30 +127,38 @@ export default function PerformancePanel() {
       return buckets[key];
     };
 
-    ngap.filter(p => within(p.date)).forEach(p => {
-      const v = series === "index" ? p.hi
-              : series === "gross" ? p.gross
-              : p.net;
-      if (v == null) return;
+    // Hole filter. On "all" a 9-hole score is doubled so it sits on the same
+    // axis as an 18-hole one — a visual approximation only. WHS pairs two
+    // 9-hole differentials rather than doubling, so this is not how your
+    // official index is computed. The index series is unaffected either way,
+    // since a Handicap Index is already 18-hole equivalent.
+    const keep = (holes: number) =>
+      holeFilter === "all" ? true : Number(holeFilter) === holes;
+    const scale = (v: number, holes: number) =>
+      holeFilter === "all" && holes === 9 && series !== "index" ? v * 2 : v;
+
+    ngap.filter(p => within(p.date) && keep(p.holes)).forEach(p => {
+      const raw = series === "index" ? p.hi : series === "gross" ? p.gross : p.net;
+      if (raw == null) return;
       const b = touch(p.date);
-      b.ngapVals.push(v);
+      b.ngapVals.push(scale(raw, p.holes));
       b.course = b.course || p.course;
     });
 
-    app.filter(p => within(p.date)).forEach(p => {
-      const v = series === "index" ? p.diff
-              : series === "gross" ? p.gross
-              : (p.hi != null && p.gross != null ? p.gross - Math.round(p.hi) : null);
-      if (v == null) return;
+    app.filter(p => within(p.date) && keep(p.holes)).forEach(p => {
+      const raw = series === "index" ? p.diff
+                : series === "gross" ? p.gross
+                : (p.hi != null && p.gross != null ? p.gross - Math.round(p.hi) : null);
+      if (raw == null) return;
       const b = touch(p.date);
-      b.myVals.push(v);
+      b.myVals.push(scale(raw, p.holes));
       b.course = p.course || b.course;
     });
 
     const avg = (a: number[]) =>
       a.length ? Math.round((a.reduce((x, y) => x + y, 0) / a.length) * 10) / 10 : null;
 
-    return Object.values(buckets)
+    const rows = Object.values(buckets)
       .sort((a, b) => a.key.localeCompare(b.key))
       .map(b => ({
         date: b.date,
@@ -133,8 +167,19 @@ export default function PerformancePanel() {
         myDiff: avg(b.myVals),
         myCourse: b.course,
         n: b.myVals.length,
+        trend: null as number | null,
       }));
-  }, [ngap, app, range, series]);
+
+    // Trend follows whichever series has more points to fit
+    const ngapCount = rows.filter(r => r.hi != null).length;
+    const mineCount = rows.filter(r => r.myDiff != null).length;
+    const source = ngapCount >= mineCount
+      ? rows.map(r => r.hi)
+      : rows.map(r => r.myDiff);
+    trendPoints(source).forEach((v, i) => { rows[i].trend = v; });
+
+    return rows;
+  }, [ngap, app, range, series, holeFilter]);
 
   const aggregated = range === "monthly" || range === "yearly";
 
@@ -218,7 +263,7 @@ export default function PerformancePanel() {
             </div>
             {data?.currentIndexUpdated && (
               <div className="text-[9px] text-muted-foreground/70">
-                as of {data.currentIndexUpdated}
+                as of {String(data.currentIndexUpdated).slice(0, 10)}
               </div>
             )}
           </div>
@@ -256,6 +301,30 @@ export default function PerformancePanel() {
 
           <span className="flex-1" />
 
+          <div className="flex rounded-md overflow-hidden ring-1 ring-border">
+            {([["18", "18h"], ["9", "9h"], ["all", "All"]] as [HoleFilter, string][]).map(([v, lbl]) => (
+              <button
+                key={v}
+                onClick={() => setHoleFilter(v)}
+                className={`px-2 py-1 text-[11px] transition ${
+                  holeFilter === v ? "bg-primary text-primary-foreground"
+                                   : "bg-transparent text-muted-foreground hover:bg-muted"}`}
+              >
+                {lbl}
+              </button>
+            ))}
+          </div>
+
+          <button
+            onClick={() => setShowTrend(v => !v)}
+            className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] transition ${
+              showTrend ? "text-foreground" : "text-muted-foreground/50"}`}
+          >
+            <span className="w-3 h-0.5 rounded" style={{
+              background: "repeating-linear-gradient(90deg,#8a8070 0 3px,transparent 3px 6px)" }} />
+            Trend
+          </button>
+
           {(
             <button
               onClick={() => setShowNgap(v => !v)}
@@ -276,6 +345,13 @@ export default function PerformancePanel() {
           </button>
         </div>
 
+        {holeFilter === "all" && series !== "index" && (
+          <p className="text-[10px] text-muted-foreground -mt-1">
+            9-hole scores are doubled to sit on the same axis. Rough comparison
+            only — WHS pairs two 9-hole differentials rather than doubling.
+          </p>
+        )}
+
         {/* ── The chart ── */}
         {chart.length === 0 ? (
           <div className="h-52 flex items-center justify-center text-sm text-muted-foreground">
@@ -293,7 +369,8 @@ export default function PerformancePanel() {
                 <Tooltip
                   contentStyle={{ fontSize: 11, borderRadius: 8, border: "1px solid #0001" }}
                   formatter={(v: any, name: string) => [
-                    v, name === "hi"
+                    v, name === "trend" ? "Trend"
+                       : name === "hi"
                         ? (series === "index" ? "NGAP index"
                            : series === "gross" ? "NGAP gross" : "NGAP net")
                         : (series === "index" ? "My differential"
@@ -307,6 +384,11 @@ export default function PerformancePanel() {
                 {lowLine != null && series === "index" && (
                   <ReferenceLine y={lowLine} stroke="#00000030" strokeDasharray="3 3"
                                  label={{ value: `Low ${lowLine}`, fontSize: 9, position: "right" }} />
+                )}
+                {showTrend && (
+                  <Line type="linear" dataKey="trend" stroke="#8a8070" strokeWidth={1.5}
+                        strokeDasharray="5 4" dot={false} connectNulls
+                        name="trend" legendType="none" />
                 )}
                 {showNgap && (
                   (series === "index" || aggregated)
