@@ -235,23 +235,13 @@ export default function PerformancePanel() {
   return (
     <Card className="overflow-hidden">
       <CardContent className="p-4 space-y-4">
-        <Tabs value={tab} onValueChange={v => setTab(v as any)}>
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="mine">My Rounds</TabsTrigger>
-            <TabsTrigger value="ngap">NGAP Official</TabsTrigger>
-          </TabsList>
-        </Tabs>
-
         {/* ── Header line ── */}
         <div className="flex items-baseline justify-between">
           <div>
-            <h3 className="font-semibold text-primary">
-              {tab === "mine" ? "My Performance" : "Official Handicap Record"}
-            </h3>
+            <h3 className="font-semibold text-primary">Performance</h3>
             <p className="text-[11px] text-muted-foreground">
-              {tab === "mine"
-                ? `${app.length} round${app.length === 1 ? "" : "s"} logged in this app`
-                : `${ngap.length} scores on NGAP${data?.ngapSynced ? ` · synced ${String(data.ngapSynced).slice(0, 10)}` : ""}`}
+              {app.length} logged here · {ngap.length} on NGAP
+              {data?.ngapSynced ? ` · synced ${String(data.ngapSynced).slice(0, 10)}` : ""}
             </p>
           </div>
           <div className="text-right">
@@ -406,7 +396,15 @@ export default function PerformancePanel() {
           </div>
         )}
 
-        {/* ── Tab-specific content below the chart ── */}
+        {/* ── Breakdown: the only part the tabs actually change ── */}
+        <div className="pt-1 space-y-3">
+          <Tabs value={tab} onValueChange={v => setTab(v as any)}>
+            <TabsList className="grid w-full grid-cols-2 h-8">
+              <TabsTrigger value="mine" className="text-xs">My Rounds</TabsTrigger>
+              <TabsTrigger value="ngap" className="text-xs">NGAP Official</TabsTrigger>
+            </TabsList>
+          </Tabs>
+
         {tab === "mine" ? (
           stats ? (
             <div className="grid grid-cols-3 gap-2 pt-1">
@@ -451,6 +449,7 @@ export default function PerformancePanel() {
             </div>
           </div>
         )}
+        </div>
       </CardContent>
     </Card>
   );
