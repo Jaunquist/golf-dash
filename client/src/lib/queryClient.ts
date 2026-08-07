@@ -149,13 +149,24 @@ const metaPut = (k: string, v: unknown) => op<void>(META, "readwrite", s => s.pu
 // No Content-Type header, deliberately: that keeps this a CORS "simple
 // request" and avoids a preflight, which Apps Script cannot answer.
 
-async function call<T>(action: string, payload: unknown = {}): Promise<T> {
+const CALL_TIMEOUT_MS = 12_000;
+
+async function call<T>(action: string, payload: unknown = {}, timeoutMs = CALL_TIMEOUT_MS): Promise<T> {
   const cfg = ensureConfig();
-  const r = await fetch(cfg.url, {
-    method: "POST",
-    body: JSON.stringify({ secret: cfg.secret, action, payload }),
-    redirect: "follow",
-  });
+  // Without this a stalled request leaves the UI on skeletons forever
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let r: Response;
+  try {
+    r = await fetch(cfg.url, {
+      method: "POST",
+      body: JSON.stringify({ secret: cfg.secret, action, payload }),
+      redirect: "follow",
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   if (!r.ok) throw new Error(`${action}: HTTP ${r.status}`);
   const b = await r.json();
   if (!b.ok) throw new Error(`${action}: ${b.error}`);
@@ -383,14 +394,26 @@ export async function apiRequest(method: string, url: string, data?: unknown): P
   // ── trends and ghost rounds (backend-computed) ──
   if (seg[1] === "trends" && method === "GET") {
     const held = await metaGet<any>("trends");
+
+    // Return the cached copy at once and refresh behind it, so the chart is
+    // never blocked on a round trip to Apps Script.
+    if (held) {
+      void call<any>("trends")
+        .then(async fresh => {
+          await metaPut("trends", fresh);
+          queryClient.invalidateQueries({ queryKey: ["/api/trends"] });
+        })
+        .catch(() => { /* keep showing what we have */ });
+      return reply(held);
+    }
+
     try {
       const fresh = await call<any>("trends");
       await metaPut("trends", fresh);
       return reply(fresh);
-    } catch (e) {
-      // Offline: serve the last copy rather than an empty chart
-      if (held) return reply(held);
-      return reply({ ngap: [], app: [], currentIndex: null, lowIndex: null, ngapSynced: null });
+    } catch {
+      return reply({ ngap: [], app: [], currentIndex: null,
+                     currentIndexUpdated: null, lowIndex: null, ngapSynced: null });
     }
   }
 
@@ -444,16 +467,10 @@ export async function apiRequest(method: string, url: string, data?: unknown): P
     if (method === "GET" && seg.length === 2) return reply(await listRounds());
 
     if (method === "GET" && seg[2] === "justin") {
-      // Pull down any completed rounds this device hasn't seen, so stats and
-      // the round list match across phone and laptop.
-      try {
-        const remote = await call<{ rounds: any[] }>("bootstrap");
-        for (const r of (remote.rounds || [])) {
-          if (String(r.status) !== "complete") continue;
-          if (await getStored(String(r.id))) continue;
-          await load(String(r.id));      // fetches players and scores, caches locally
-        }
-      } catch { /* offline — use what we have */ }
+      // Hydrate any completed rounds this device hasn't seen — but in the
+      // background. Waiting on them meant the dashboard sat on skeletons while
+      // several sequential Apps Script calls completed.
+      void hydrateMissingRounds();
 
       const bundles = await allRounds();
       return reply(bundles.map(s2 => {
@@ -547,19 +564,19 @@ export async function apiRequest(method: string, url: string, data?: unknown): P
  * unsynced edits; remote-only rounds are added as headers and hydrate fully
  * when opened.
  */
-async function listRounds(): Promise<Round[]> {
-  const local = await allRounds();
-  const byId = new Map<string, Round>();
+/** Remote rounds are pulled in the background and merged on the next read. */
+let remoteRoundsCache: Round[] | null = null;
+let remoteRoundsAt = 0;
+let remoteRoundsInFlight = false;
 
-  local.forEach(s => byId.set(String(s.round.id), s.round));
-
-  try {
-    const remote = await call<{ rounds: any[] }>("bootstrap");
-    (remote.rounds || []).forEach(r => {
-      const id = String(r.id);
-      if (byId.has(id)) return;          // local wins — it may be dirty
-      byId.set(id, {
-        id, courseId: r.course_name, courseName: String(r.course_name || ""),
+function refreshRemoteRounds(): void {
+  if (remoteRoundsInFlight) return;
+  remoteRoundsInFlight = true;
+  call<{ rounds: any[] }>("bootstrap")
+    .then(remote => {
+      remoteRoundsCache = (remote.rounds || []).map(r => ({
+        id: String(r.id), courseId: r.course_name,
+        courseName: String(r.course_name || ""),
         courseRating: null, slopeRating: null, par: null,
         date: String(r.date || ""), holes: Number(r.holes) || 18,
         gameType: String(r.game_type || ""),
@@ -567,13 +584,66 @@ async function listRounds(): Promise<Round[]> {
         status: String(r.status || "complete"),
         pars: String(r.pars || "[]"),
         holeHandicaps: String(r.hole_handicaps || "[]"),
-      });
-    });
-  } catch {
-    // Offline: local rounds are still the important ones
-  }
+      }));
+      remoteRoundsAt = Date.now();
+      // Now that we have them, ask the UI to re-read
+      queryClient.invalidateQueries({ queryKey: ["/api/rounds"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/rounds/justin"] });
+    })
+    .catch(() => { /* offline — local rounds still render */ })
+    .finally(() => { remoteRoundsInFlight = false; });
+}
+
+/**
+ * Local rounds render immediately; the sheet is merged in as it arrives.
+ *
+ * This used to await the network before returning anything, which meant a
+ * cold Apps Script call left the dashboard on skeletons for several seconds —
+ * exactly what local-first is supposed to prevent.
+ */
+async function listRounds(): Promise<Round[]> {
+  const local = await allRounds();
+  const byId = new Map<string, Round>();
+
+  local.forEach(s => byId.set(String(s.round.id), s.round));
+
+  const stale = Date.now() - remoteRoundsAt > 60_000;
+  if (stale) refreshRemoteRounds();
+
+  (remoteRoundsCache || []).forEach(r => {
+    if (!byId.has(String(r.id))) byId.set(String(r.id), r);
+  });
 
   return [...byId.values()].sort((a, b) => String(b.date).localeCompare(String(a.date)));
+}
+
+let hydrateInFlight = false;
+
+/**
+ * Fetch full detail for completed rounds present on the sheet but not on this
+ * device. Runs in parallel, capped, and never blocks a render.
+ */
+async function hydrateMissingRounds(): Promise<void> {
+  if (hydrateInFlight) return;
+  hydrateInFlight = true;
+  try {
+    const remote = remoteRoundsCache ?? [];
+    if (!remote.length) { refreshRemoteRounds(); return; }
+
+    const missing: string[] = [];
+    for (const r of remote) {
+      if (r.status !== "complete") continue;
+      if (await getStored(String(r.id))) continue;
+      missing.push(String(r.id));
+    }
+    if (!missing.length) return;
+
+    // Ten at a time: enough to be quick, few enough to be polite
+    await Promise.all(missing.slice(0, 10).map(id => load(id).catch(() => null)));
+    queryClient.invalidateQueries({ queryKey: ["/api/rounds/justin"] });
+  } finally {
+    hydrateInFlight = false;
+  }
 }
 
 async function load(id: string): Promise<Stored | null> {
