@@ -11,12 +11,14 @@ export default defineConfig({
       // Service worker lives in dist/public
       outDir: path.resolve(import.meta.dirname, "dist/public"),
       // Include these patterns in precache
-      includeAssets: ["favicon.svg", "apple-touch-icon.png", "icons/icon-192.png", "icons/icon-512.png"],
+      includeAssets: ["favicon.svg", "apple-touch-icon.png", "icons/icon-192.png",
+                      "icons/icon-512.png", "icons/icon-192-maskable.png",
+                      "icons/icon-512-maskable.png"],
       manifest: {
         name: "Golf Dash",
         short_name: "Golf Dash",
         description: "Track golf rounds, scores, handicap and game results",
-        version: "1.3.0",
+        version: "1.5.0",
         theme_color: "#1d5c3a",
         background_color: "#f5f2ea",
         display: "standalone",
@@ -35,8 +37,16 @@ export default defineConfig({
             type: "image/png",
             purpose: "any",
           },
+          // Android crops installed icons to the device's mask shape, so these
+          // carry extra padding to keep the arrow inside the safe zone.
           {
-            src: "icons/icon-512.png",
+            src: "icons/icon-192-maskable.png",
+            sizes: "192x192",
+            type: "image/png",
+            purpose: "maskable",
+          },
+          {
+            src: "icons/icon-512-maskable.png",
             sizes: "512x512",
             type: "image/png",
             purpose: "maskable",
