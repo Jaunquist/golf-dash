@@ -134,6 +134,7 @@ export default function Scorecard() {
   const scorecardRef = useRef<HTMLDivElement>(null);
   const [isSharing, setIsSharing] = useState(false);
   const [imageMenuOpen, setImageMenuOpen] = useState(false);
+  const imageMenuRef = useRef<HTMLDivElement>(null);
   const [finishedSummary, setFinishedSummary] = useState<null | {
     course: string; gross: number; putts: number | null; toPar: number | null;
   }>(null);
@@ -162,6 +163,15 @@ export default function Scorecard() {
     setNotes(gameOptsRaw.notes ?? "");
     setNotesLoaded(true);
   }, [data?.round, notesLoaded, gameOptsRaw.notes]);
+
+  useEffect(() => {
+    if (!imageMenuOpen) return;
+    const onDown = (e: PointerEvent) => {
+      if (!imageMenuRef.current?.contains(e.target as Node)) setImageMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [imageMenuOpen]);
 
   const saveNotes = useCallback(() => {
     if (!data?.round) return;
@@ -463,7 +473,7 @@ export default function Scorecard() {
           <thead>
             <tr className="bg-primary/8 border-b border-border">
               <th className="text-left px-2 py-2 font-semibold text-muted-foreground w-20
-                             sticky left-0 z-20 bg-card [background-image:linear-gradient(hsl(var(--primary)/0.08),hsl(var(--primary)/0.08))] shadow-[1px_0_0_0_hsl(var(--border))]">Player</th>
+                             sticky left-0 z-[5] bg-card [background-image:linear-gradient(hsl(var(--primary)/0.08),hsl(var(--primary)/0.08))] shadow-[1px_0_0_0_hsl(var(--border))]">Player</th>
               {holeList.map((h, hi) => (
                 <th key={h}
                     className={`text-center px-1 py-2 font-semibold w-10
@@ -487,7 +497,7 @@ export default function Scorecard() {
               const playerColor = getPlayerColor(pi, player, isTeamGame);
               return (
                 <tr key={player.id} className={`border-b border-border/50 ${pi % 2 === 0 ? "" : "bg-muted/20"}`}>
-                  <td className="px-2 py-1.5 sticky left-0 bg-card z-20 shadow-[1px_0_0_0_hsl(var(--border))]">
+                  <td className="px-2 py-1.5 sticky left-0 bg-card z-[5] shadow-[1px_0_0_0_hsl(var(--border))]">
                     <div className={`font-semibold truncate max-w-[70px] ${playerColor}`}>{player.name}</div>
                     <div className="text-[9px] text-muted-foreground">HCP {player.courseHandicap ?? "—"}</div>
                   </td>
@@ -544,7 +554,7 @@ export default function Scorecard() {
             {/* Ghost row — shown when solo ghost mode enabled */}
             {isSoloGhost && ghostData && (
               <tr className="border-b border-border/30 opacity-50">
-                <td className="px-2 py-1.5 sticky left-0 bg-card z-20 shadow-[1px_0_0_0_hsl(var(--border))]">
+                <td className="px-2 py-1.5 sticky left-0 bg-card z-[5] shadow-[1px_0_0_0_hsl(var(--border))]">
                   <div className="flex items-center gap-1 text-muted-foreground">
                     <Ghost size={11} />
                     <span className="text-[10px] font-semibold">Best</span>
@@ -576,7 +586,7 @@ export default function Scorecard() {
             {!isSoloRound && (
             <tr className="bg-primary/5 border-t-2 border-primary/20">
               <td className="px-2 py-1.5 text-xs font-semibold text-primary
-                             sticky left-0 z-20 bg-card [background-image:linear-gradient(hsl(var(--primary)/0.05),hsl(var(--primary)/0.05))] shadow-[1px_0_0_0_hsl(var(--border))]">Points</td>
+                             sticky left-0 z-[5] bg-card [background-image:linear-gradient(hsl(var(--primary)/0.05),hsl(var(--primary)/0.05))] shadow-[1px_0_0_0_hsl(var(--border))]">Points</td>
               {holeList.map(h => {
                 const hr = holeResults.find(r => r.hole === h);
                 return (
@@ -1469,7 +1479,7 @@ export default function Scorecard() {
 
             {/* One Image button; the choice between saving and sending lives in
                 a small menu, which keeps the toolbar to a single phone row. */}
-            <div className="relative">
+            <div className="relative" ref={imageMenuRef}>
               <Button
                 size="sm"
                 variant="outline"
@@ -1484,11 +1494,6 @@ export default function Scorecard() {
 
               {imageMenuOpen && !isSharing && (
                 <>
-                  <button
-                    className="fixed inset-0 z-20 cursor-default"
-                    aria-label="Close menu"
-                    onClick={() => setImageMenuOpen(false)}
-                  />
                   <div className="absolute right-0 top-8 z-30 w-44 rounded-lg border border-border
                                   bg-card shadow-lg overflow-hidden">
                     <button
