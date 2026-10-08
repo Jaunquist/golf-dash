@@ -23,6 +23,7 @@ import {
 import type { Round, RoundPlayer, HoleScore } from "@shared/schema";
 import { handicapStrokesOnHole } from "@/lib/gameEngine";
 import PerformancePanel from "@/components/PerformancePanel";
+import AuthGate, { SignInButton } from "@/components/AuthGate";
 
 const GAME_LABELS: Record<string, string> = {
   best_ball: "Best Ball",
@@ -233,7 +234,7 @@ function SwipeableRoundCard({ round, summary, onDelete, navigate }: SwipeableRou
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
-export default function Dashboard() {
+function DashboardInner() {
   const [, navigate] = useLocation();
   const [activeTab, setActiveTab] = useState("overview");
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
@@ -443,6 +444,7 @@ export default function Dashboard() {
             <circle cx="16" cy="24" r="2" fill="currentColor" className="text-accent" />
           </svg>
           <h1 className="font-display font-bold text-lg flex-1">Golf Dash</h1>
+          <SignInButton />
           <Button
             variant="ghost"
             size="sm"
@@ -805,5 +807,14 @@ export default function Dashboard() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+/** The dashboard is the one place that requires sign-in. */
+export default function Dashboard() {
+  return (
+    <AuthGate>
+      <DashboardInner />
+    </AuthGate>
   );
 }
