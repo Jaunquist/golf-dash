@@ -17,6 +17,8 @@ import {
 } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, CheckCircle2, Users, Trash2, UserPlus, Download, Ghost, Pencil, Link2, Share2, StickyNote } from "lucide-react";
+import { ReadOnlyBar } from "@/components/AuthGate";
+import { canEdit } from "@/lib/queryClient";
 import {
   computeGameResults, cumulativeTotals, scoreCssClass, handicapStrokesOnHole,
   type Player as GPlayer
@@ -302,7 +304,11 @@ export default function Scorecard() {
   });
 
   // Open sheet for a specific player + hole
+  const readOnly = !canEdit();
+
   const openSheet = useCallback((playerId: string, hole: number) => {
+    // Viewing a shared link: taps should do nothing rather than fail on save
+    if (readOnly) return;
     setSheetPlayerId(playerId);
     setSheetHole(hole);
     setSheetOpen(true);
@@ -1456,6 +1462,8 @@ export default function Scorecard() {
           </div>
         </div>
       </header>
+
+      <ReadOnlyBar />
 
       <main className="max-w-5xl mx-auto px-3 py-4 space-y-4" ref={scorecardRef}>
         {/* Tap instruction */}
