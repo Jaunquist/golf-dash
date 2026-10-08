@@ -432,14 +432,16 @@ export default function Scorecard() {
   function renderSection(holeList: number[]) {
     const sectionPar = getSectionPar(holeList);
     return (
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs border-collapse min-w-[600px]">
+      <div className="overflow-x-auto landscape:overflow-x-visible">
+        <table className="w-full text-xs border-collapse min-w-[600px]
+                          landscape:min-w-0 landscape:text-[11px] landscape:table-fixed">
           <thead>
             <tr className="bg-primary/8 border-b border-border">
               <th className="text-left px-2 py-2 font-semibold text-muted-foreground w-20 sticky left-0 bg-primary/8 z-10">Player</th>
               {holeList.map((h, hi) => (
                 <th key={h}
-                    className={`text-center px-1 py-2 font-semibold w-10 ${
+                    className={`text-center px-1 py-2 font-semibold w-10
+                      landscape:w-auto landscape:px-0 landscape:py-1.5 ${
                       hi % 2 === 1 ? "bg-primary/[0.06]" : ""}`}>
                   <div>{holeLabel(h)}</div>
                   <div className="text-muted-foreground font-normal">{pars[h-1]}</div>
@@ -476,7 +478,7 @@ export default function Scorecard() {
                     const isSheetActive = sheetOpen && sheetPlayerId === player.id && sheetHole === h;
 
                     return (
-                      <td key={h} className={`text-center p-0.5 ${colTint}`}>
+                      <td key={h} className={`text-center p-0.5 landscape:p-0 ${colTint}`}>
                         <div
                           className={`relative rounded w-9 h-10 mx-auto flex flex-col items-center justify-center cursor-pointer border
                             ${isWinner ? "border-accent bg-accent/10" : "border-transparent"}
@@ -1465,7 +1467,9 @@ export default function Scorecard() {
 
       <ReadOnlyBar />
 
-      <main className="max-w-5xl mx-auto px-3 py-4 space-y-4" ref={scorecardRef}>
+      <main className="max-w-5xl mx-auto px-3 py-4 space-y-4
+                       landscape:px-2 landscape:py-2 landscape:space-y-2 landscape:max-w-none"
+            ref={scorecardRef}>
         {/* Tap instruction */}
         {round.status === "active" && (
           <p className="text-xs text-muted-foreground text-center">Tap a cell to enter strokes and putts. Putts appear as superscript. Dots = handicap strokes.</p>
