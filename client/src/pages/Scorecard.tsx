@@ -133,6 +133,10 @@ export default function Scorecard() {
   // Ref wrapping the entire scorecard content (for screenshot)
   const scorecardRef = useRef<HTMLDivElement>(null);
   const [isSharing, setIsSharing] = useState(false);
+  const [imageMenuOpen, setImageMenuOpen] = useState(false);
+  const [finishedSummary, setFinishedSummary] = useState<null | {
+    course: string; gross: number; putts: number | null; toPar: number | null;
+  }>(null);
 
   const { data, isLoading, error } = useQuery<{ round: Round; players: RoundPlayer[]; scores: HoleScore[] }>({
     queryKey: ["/api/rounds", roundId],
@@ -202,7 +206,28 @@ export default function Scorecard() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/rounds"] });
       qc.invalidateQueries({ queryKey: ["/api/rounds", roundId] });
-      toast({ title: "Round completed!" });
+      qc.invalidateQueries({ queryKey: ["/api/rounds/justin"] });
+      qc.invalidateQueries({ queryKey: ["/api/trends"] });
+
+      // A toast is easy to miss on a phone; show the round's own numbers and
+      // make returning to the dashboard the obvious next step.
+      const me = data?.players?.find(p => p.position === 1);
+      if (me) {
+        const mine = (data?.scores ?? []).filter(x => x.playerId === me.id);
+        const gross = mine.reduce((t, x) => t + (x.strokes ?? 0), 0);
+        const putts = mine.reduce((t, x) => t + (x.putts ?? 0), 0);
+        const parTotal = JSON.parse(data!.round.pars || "[]")
+          .slice(0, data!.round.holes)
+          .reduce((t: number, p: number) => t + (Number(p) || 0), 0);
+        setFinishedSummary({
+          course: data!.round.courseName,
+          gross,
+          putts: putts || null,
+          toPar: parTotal ? gross - parTotal : null,
+        });
+      } else {
+        navigate("/");
+      }
     },
   });
 
@@ -437,7 +462,8 @@ export default function Scorecard() {
                           landscape:min-w-0 landscape:text-[11px] landscape:table-fixed">
           <thead>
             <tr className="bg-primary/8 border-b border-border">
-              <th className="text-left px-2 py-2 font-semibold text-muted-foreground w-20 sticky left-0 bg-primary/8 z-10">Player</th>
+              <th className="text-left px-2 py-2 font-semibold text-muted-foreground w-20
+                             sticky left-0 z-20 bg-card [background-image:linear-gradient(hsl(var(--primary)/0.08),hsl(var(--primary)/0.08))] shadow-[1px_0_0_0_hsl(var(--border))]">Player</th>
               {holeList.map((h, hi) => (
                 <th key={h}
                     className={`text-center px-1 py-2 font-semibold w-10
@@ -461,7 +487,7 @@ export default function Scorecard() {
               const playerColor = getPlayerColor(pi, player, isTeamGame);
               return (
                 <tr key={player.id} className={`border-b border-border/50 ${pi % 2 === 0 ? "" : "bg-muted/20"}`}>
-                  <td className="px-2 py-1.5 sticky left-0 bg-card z-10">
+                  <td className="px-2 py-1.5 sticky left-0 bg-card z-20 shadow-[1px_0_0_0_hsl(var(--border))]">
                     <div className={`font-semibold truncate max-w-[70px] ${playerColor}`}>{player.name}</div>
                     <div className="text-[9px] text-muted-foreground">HCP {player.courseHandicap ?? "—"}</div>
                   </td>
@@ -518,7 +544,7 @@ export default function Scorecard() {
             {/* Ghost row — shown when solo ghost mode enabled */}
             {isSoloGhost && ghostData && (
               <tr className="border-b border-border/30 opacity-50">
-                <td className="px-2 py-1.5 sticky left-0 bg-card z-10">
+                <td className="px-2 py-1.5 sticky left-0 bg-card z-20 shadow-[1px_0_0_0_hsl(var(--border))]">
                   <div className="flex items-center gap-1 text-muted-foreground">
                     <Ghost size={11} />
                     <span className="text-[10px] font-semibold">Best</span>
@@ -549,7 +575,8 @@ export default function Scorecard() {
             {/* Game points row — hidden for solo rounds */}
             {!isSoloRound && (
             <tr className="bg-primary/5 border-t-2 border-primary/20">
-              <td className="px-2 py-1.5 text-xs font-semibold text-primary sticky left-0 bg-primary/5 z-10">Points</td>
+              <td className="px-2 py-1.5 text-xs font-semibold text-primary
+                             sticky left-0 z-20 bg-card [background-image:linear-gradient(hsl(var(--primary)/0.05),hsl(var(--primary)/0.05))] shadow-[1px_0_0_0_hsl(var(--border))]">Points</td>
               {holeList.map(h => {
                 const hr = holeResults.find(r => r.hole === h);
                 return (
@@ -1339,7 +1366,7 @@ export default function Scorecard() {
             )}
           </div>
           {/* Row 2: game badge + action buttons */}
-          <div className="h-9 flex items-center gap-1.5 pb-1">
+          <div className="flex flex-wrap items-center gap-1.5 pb-2">
             {/* Clickable game badge — opens edit sheet for active rounds */}
             {round.status === "active" && !isSoloRound ? (
               <button
@@ -1437,33 +1464,103 @@ export default function Scorecard() {
               }}
               className="gap-1 text-[11px] h-7 px-2"
             >
-              <Link2 size={12} /> Share
+              <Link2 size={12} /> Share link
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              data-testid="btn-download-scorecard"
-              onClick={() => handleShare("save")}
-              disabled={isSharing}
-              className="gap-1 text-[11px] h-7 px-2"
-              title="Download the scorecard image"
-            >
-              <Download size={12} /> {isSharing ? "…" : "Save"}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              data-testid="btn-share-scorecard-image"
-              onClick={() => handleShare("share")}
-              disabled={isSharing}
-              className="gap-1 text-[11px] h-7 px-2"
-              title="Share the scorecard image to another app"
-            >
-              <Share2 size={12} /> {isSharing ? "…" : "Send"}
-            </Button>
+
+            {/* One Image button; the choice between saving and sending lives in
+                a small menu, which keeps the toolbar to a single phone row. */}
+            <div className="relative">
+              <Button
+                size="sm"
+                variant="outline"
+                data-testid="btn-scorecard-image"
+                onClick={() => setImageMenuOpen(v => !v)}
+                disabled={isSharing}
+                className="gap-1 text-[11px] h-7 px-2"
+                title="Save or send the scorecard image"
+              >
+                <Download size={12} /> {isSharing ? "…" : "Image"}
+              </Button>
+
+              {imageMenuOpen && !isSharing && (
+                <>
+                  <button
+                    className="fixed inset-0 z-20 cursor-default"
+                    aria-label="Close menu"
+                    onClick={() => setImageMenuOpen(false)}
+                  />
+                  <div className="absolute right-0 top-8 z-30 w-44 rounded-lg border border-border
+                                  bg-card shadow-lg overflow-hidden">
+                    <button
+                      data-testid="btn-download-scorecard"
+                      onClick={() => { setImageMenuOpen(false); handleShare("save"); }}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 text-xs hover:bg-muted text-left"
+                    >
+                      <Download size={13} /> Save to device
+                    </button>
+                    <button
+                      data-testid="btn-share-scorecard-image"
+                      onClick={() => { setImageMenuOpen(false); handleShare("share"); }}
+                      className="w-full flex items-center gap-2 px-3 py-2.5 text-xs hover:bg-muted
+                                 text-left border-t border-border"
+                    >
+                      <Share2 size={13} /> Send to an app
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
       </header>
+
+      {finishedSummary && (
+        <div className="fixed inset-0 z-50 bg-background flex flex-col items-center
+                        justify-center px-8 text-center gap-6">
+          <div className="rounded-full bg-primary/10 p-5">
+            <CheckCircle2 size={48} className="text-primary" />
+          </div>
+
+          <div className="space-y-1">
+            <h2 className="font-display font-bold text-2xl">Round complete</h2>
+            <p className="text-sm text-muted-foreground">{finishedSummary.course}</p>
+          </div>
+
+          <div className="flex gap-6">
+            <div>
+              <div className="text-3xl font-bold tabular">{finishedSummary.gross}</div>
+              <div className="text-[11px] text-muted-foreground uppercase tracking-wide">Gross</div>
+            </div>
+            {finishedSummary.toPar != null && (
+              <div>
+                <div className="text-3xl font-bold tabular">
+                  {finishedSummary.toPar > 0 ? "+" : ""}{finishedSummary.toPar}
+                </div>
+                <div className="text-[11px] text-muted-foreground uppercase tracking-wide">To par</div>
+              </div>
+            )}
+            {finishedSummary.putts != null && (
+              <div>
+                <div className="text-3xl font-bold tabular">{finishedSummary.putts}</div>
+                <div className="text-[11px] text-muted-foreground uppercase tracking-wide">Putts</div>
+              </div>
+            )}
+          </div>
+
+          <p className="text-xs text-muted-foreground max-w-xs">
+            Saved to your sheet. Your handicap and stats will update once it syncs.
+          </p>
+
+          <div className="flex flex-col gap-2 w-full max-w-xs">
+            <Button onClick={() => navigate("/")} className="w-full">
+              Back to dashboard
+            </Button>
+            <Button variant="outline" onClick={() => setFinishedSummary(null)} className="w-full">
+              Stay on scorecard
+            </Button>
+          </div>
+        </div>
+      )}
 
       <ReadOnlyBar />
 
