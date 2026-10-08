@@ -50,9 +50,77 @@ export function publicEndpoint(): string {
   return readConfig().url;
 }
 
-/** True when this device can write — i.e. it holds the secret. */
+// ── Sign-in state ──────────────────────────────────────────────────────────
+
+const SESSION_KEY = "golf-dash-session";
+
+export interface Session { token: string; email: string; name: string }
+
+const authWatchers = new Set<(s: Session | null) => void>();
+
+export function getSession(): Session | null {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    return s?.token ? s : null;
+  } catch { return null; }
+}
+
+function setSession(s: Session | null) {
+  try {
+    if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+    else localStorage.removeItem(SESSION_KEY);
+  } catch { /* storage blocked — session lasts this tab only */ }
+  authWatchers.forEach(fn => fn(s));
+}
+
+export function onAuthChange(fn: (s: Session | null) => void) {
+  authWatchers.add(fn);
+  fn(getSession());
+  return () => { authWatchers.delete(fn); };
+}
+
+/**
+ * Exchange a Google ID token for a session this backend minted.
+ * Apps Script checks the token really is Google's and really is the owner.
+ */
+export async function signInWithGoogle(idToken: string): Promise<Session> {
+  const url = publicEndpoint();
+  if (!url) throw new Error("No backend configured");
+
+  const r = await fetch(url, {
+    method: "POST",
+    body: JSON.stringify({ action: "authenticate", payload: { idToken } }),
+    redirect: "follow",
+  });
+  const b = await r.json();
+  if (!b.ok) throw new Error(b.error || "Sign-in failed");
+
+  const s: Session = { token: b.data.session, email: b.data.email, name: b.data.name || "" };
+  setSession(s);
+  queryClient.invalidateQueries();
+  return s;
+}
+
+export async function signOut(): Promise<void> {
+  const s = getSession();
+  setSession(null);
+  if (s) {
+    try {
+      await fetch(publicEndpoint(), {
+        method: "POST",
+        body: JSON.stringify({ action: "signOut", session: s.token }),
+        redirect: "follow",
+      });
+    } catch { /* local sign-out already done */ }
+  }
+  queryClient.invalidateQueries();
+}
+
+/** True when this device can write — a Google session, or the legacy secret. */
 export function canEdit(): boolean {
-  return !!readConfig().secret;
+  return !!(getSession() || readConfig().secret);
 }
 
 /**
@@ -83,7 +151,7 @@ export function configureBackend(url: string, secret: string): void {
 
 export function isConfigured(): boolean {
   const c = readConfig();
-  return !!(c.url && c.secret);
+  return !!(c.url && (c.secret || getSession()));
 }
 
 /** Shared links render without credentials, so never prompt on those routes. */
@@ -111,7 +179,7 @@ let promptShown = false;
  */
 function ensureConfig(): { url: string; secret: string } {
   const c = readConfig();
-  if (c.url && c.secret) return c;
+  if (c.url && (c.secret || getSession())) return c;
   if (onPublicRoute()) throw new Error("Viewing a shared scorecard — sign in to edit");
 
   if (!promptShown && typeof window !== "undefined") {
@@ -246,7 +314,11 @@ async function call<T>(action: string, payload: unknown = {}, timeoutMs = CALL_T
   try {
     r = await fetch(cfg.url, {
       method: "POST",
-      body: JSON.stringify({ secret: cfg.secret, action, payload }),
+      body: JSON.stringify({
+        session: getSession()?.token,
+        secret: cfg.secret,
+        action, payload,
+      }),
       redirect: "follow",
       signal: ctrl.signal,
     });
