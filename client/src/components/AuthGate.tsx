@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { onAuthChange, signInWithGoogle, signOut, canEdit, type Session }
-  from "@/lib/queryClient";
+import { onAuthChange, signInWithGoogle, signOut, canEdit, publicEndpoint,
+  setEndpoint, type Session } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { LogOut } from "lucide-react";
 
@@ -72,10 +72,39 @@ function GoogleButton({ onDone }: { onDone?: () => void }) {
   }, [onDone, toast]);
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2 flex flex-col items-center">
       <div ref={box} className={busy ? "opacity-50 pointer-events-none" : ""} />
       {busy && <p className="text-xs text-muted-foreground">Checking with Google…</p>}
       {err && <p className="text-xs text-destructive max-w-xs">{err}</p>}
+      {err && /backend|endpoint/i.test(err) && <EndpointFallback />}
+    </div>
+  );
+}
+
+/**
+ * Shown when the build has no endpoint baked in. Without this the sign-in
+ * screen is a dead end — the button works but has nowhere to send the token.
+ */
+function EndpointFallback() {
+  const [url, setUrl] = useState("");
+  return (
+    <div className="mt-3 w-full max-w-xs space-y-2 text-left">
+      <label className="text-[11px] text-muted-foreground block">
+        Paste your Apps Script Web App URL (ends in /exec)
+      </label>
+      <input
+        value={url}
+        onChange={e => setUrl(e.target.value)}
+        placeholder="https://script.google.com/macros/s/…/exec"
+        className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs"
+      />
+      <button
+        onClick={() => { if (url.trim()) { setEndpoint(url); location.reload(); } }}
+        disabled={!url.trim()}
+        className="w-full rounded-md bg-primary text-primary-foreground text-xs py-1.5 disabled:opacity-40"
+      >
+        Save and retry
+      </button>
     </div>
   );
 }
@@ -112,6 +141,12 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
       </div>
 
       <GoogleButton />
+
+      {!publicEndpoint() && (
+        <div className="w-full flex justify-center">
+          <EndpointFallback />
+        </div>
+      )}
     </div>
   );
 }
