@@ -28,8 +28,12 @@ jobs:
 
       - run: npm ci
 
-      # No secrets needed: the app asks for its backend details per device
+      # The endpoint is public (reads need an unguessable round id, writes need
+      # the secret, which is NOT baked in). Baking the URL is what lets a shared
+      # scorecard open for someone who has never configured the app.
       - run: npx vite build
+        env:
+          VITE_APPS_SCRIPT_URL: ${{ secrets.VITE_APPS_SCRIPT_URL }}
 
       - uses: actions/upload-pages-artifact@v3
         with:
