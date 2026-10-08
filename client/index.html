@@ -19,6 +19,9 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Google Identity Services, for owner sign-in. Loads async so a slow or
+         blocked response never delays the app; shared scorecards do not need it. -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
