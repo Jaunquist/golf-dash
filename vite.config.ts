@@ -155,6 +155,16 @@ export default defineConfig({
   root: path.resolve(import.meta.dirname, "client"),
   base: "./",
   build: {
+    rollupOptions: {
+      output: {
+        // Recharts is large and only the dashboard uses it; keeping it in its
+        // own chunk means a shared scorecard never downloads it.
+        manualChunks: {
+          charts: ["recharts"],
+          vendor: ["react", "react-dom", "wouter", "@tanstack/react-query"],
+        },
+      },
+    },
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
   },
