@@ -50,6 +50,17 @@ export function publicEndpoint(): string {
   return readConfig().url;
 }
 
+/**
+ * Record the endpoint for this device without touching the secret.
+ * A recovery path for when the build-time URL is missing.
+ */
+export function setEndpoint(url: string): void {
+  const c = readConfig();
+  try {
+    localStorage.setItem(CFG_KEY, JSON.stringify({ url: url.trim(), secret: c.secret || "" }));
+  } catch { /* storage blocked */ }
+}
+
 // ── Sign-in state ──────────────────────────────────────────────────────────
 
 const SESSION_KEY = "golf-dash-session";
