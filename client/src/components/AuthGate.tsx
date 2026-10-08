@@ -76,7 +76,6 @@ function GoogleButton({ onDone }: { onDone?: () => void }) {
       <div ref={box} className={busy ? "opacity-50 pointer-events-none" : ""} />
       {busy && <p className="text-xs text-muted-foreground">Checking with Google…</p>}
       {err && <p className="text-xs text-destructive max-w-xs">{err}</p>}
-      {err && /backend|endpoint/i.test(err) && <EndpointFallback />}
     </div>
   );
 }
@@ -157,7 +156,22 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
  */
 export function SignInButton({ compact = false }: { compact?: boolean }) {
   const [session, setSession] = useState<Session | null>(null);
+  const [open, setOpen] = useState(false);
   useEffect(() => onAuthChange(setSession), []);
+
+  // Already editable via the stored secret — nothing to prompt for
+  if (!session && canEdit()) return null;
+
+  if (!session && !open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2"
+      >
+        Sign in
+      </button>
+    );
+  }
 
   if (session) {
     if (compact) return null;
