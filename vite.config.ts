@@ -18,11 +18,12 @@ export default defineConfig({
         name: "Golf Dash",
         short_name: "Golf Dash",
         description: "Track golf rounds, scores, handicap and game results",
-        version: "1.5.0",
+        version: "1.6.0",
         theme_color: "#1d5c3a",
         background_color: "#f5f2ea",
         display: "standalone",
-        orientation: "portrait",
+        // "any" lets the scorecard be read in landscape; "portrait" locks it
+        orientation: "any",
         start_url: "./",
         icons: [
           {
