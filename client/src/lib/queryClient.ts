@@ -23,18 +23,56 @@ import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
 const CFG_KEY = "golf-dash-backend";
 
+/**
+ * The endpoint is baked into the build; the secret is not.
+ *
+ * The URL on its own grants nothing: ?round=<id> needs an unguessable id, and
+ * every write path still checks the secret. Baking it is what lets someone
+ * open a shared scorecard without being handed credentials first.
+ */
+const BUILD_URL = (import.meta.env.VITE_APPS_SCRIPT_URL as string) || "";
+
 function readConfig(): { url: string; secret: string } {
+  let stored: { url?: string; secret?: string } = {};
   try {
     const raw = localStorage.getItem(CFG_KEY);
-    if (raw) {
-      const c = JSON.parse(raw);
-      if (c.url && c.secret) return c;
-    }
-  } catch { /* fall through to env */ }
+    if (raw) stored = JSON.parse(raw) || {};
+  } catch { /* unreadable storage — fall back to the build value */ }
+
   return {
-    url: (import.meta.env.VITE_APPS_SCRIPT_URL as string) || "",
-    secret: (import.meta.env.VITE_APPS_SCRIPT_SECRET as string) || "",
+    url: stored.url || BUILD_URL,
+    secret: stored.secret || (import.meta.env.VITE_APPS_SCRIPT_SECRET as string) || "",
   };
+}
+
+/** The endpoint is known even when this device has no credentials. */
+export function publicEndpoint(): string {
+  return readConfig().url;
+}
+
+/** True when this device can write — i.e. it holds the secret. */
+export function canEdit(): boolean {
+  return !!readConfig().secret;
+}
+
+/**
+ * Read one round with no credentials, via the public GET endpoint.
+ * This is what a shared link uses.
+ */
+async function publicRound(roundId: string): Promise<any | null> {
+  const url = publicEndpoint();
+  if (!url) return null;
+  try {
+    const r = await fetch(`${url}?round=${encodeURIComponent(roundId)}`, {
+      method: "GET",
+      redirect: "follow",
+    });
+    if (!r.ok) return null;
+    const b = await r.json();
+    return b.ok ? b.data : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Store this device's backend details. Call from the console or a settings UI. */
@@ -46,6 +84,12 @@ export function configureBackend(url: string, secret: string): void {
 export function isConfigured(): boolean {
   const c = readConfig();
   return !!(c.url && c.secret);
+}
+
+/** Shared links render without credentials, so never prompt on those routes. */
+function onPublicRoute(): boolean {
+  if (typeof location === "undefined") return false;
+  return /#\/shared\//.test(location.href);
 }
 
 export function clearBackendConfig(): void {
@@ -61,19 +105,22 @@ if (typeof window !== "undefined") {
 
 let promptShown = false;
 
-/** Ask once, on first real use, rather than blocking module load. */
+/**
+ * Credentials for a write. Never prompts on a shared link — a viewer has no
+ * secret and is not supposed to need one.
+ */
 function ensureConfig(): { url: string; secret: string } {
   const c = readConfig();
   if (c.url && c.secret) return c;
+  if (onPublicRoute()) throw new Error("Viewing a shared scorecard — sign in to edit");
+
   if (!promptShown && typeof window !== "undefined") {
     promptShown = true;
-    const url = window.prompt("Golf Dash setup — paste your Apps Script Web App URL (ends in /exec):");
-    if (url) {
-      const secret = window.prompt("Now paste your shared secret:");
-      if (secret) configureBackend(url, secret);
-    }
+    // The URL is baked in, so in the normal case only the secret is missing
+    const secret = window.prompt("Golf Dash — paste your shared secret to enable editing:");
+    if (secret) configureBackend(c.url || BUILD_URL, secret);
   }
-  throw new Error("Backend not configured on this device");
+  throw new Error("Not signed in on this device");
 }
 
 // ── Types (camelCase — what the pages already expect) ───────────────────────
@@ -151,11 +198,50 @@ const metaPut = (k: string, v: unknown) => op<void>(META, "readwrite", s => s.pu
 
 const CALL_TIMEOUT_MS = 12_000;
 
+// ── Background activity ────────────────────────────────────────────────────
+// Every Apps Script call registers here, so the UI can show that something is
+// happening without blocking on it.
+
+let activeCalls = 0;
+let activeLabel = "";
+const activityWatchers = new Set<(n: number, label: string) => void>();
+
+export function onActivityChange(fn: (busy: number, label: string) => void) {
+  activityWatchers.add(fn);
+  fn(activeCalls, activeLabel);
+  return () => { activityWatchers.delete(fn); };
+}
+
+const ACTION_LABELS: Record<string, string> = {
+  bootstrap: "Loading your courses",
+  getRound: "Fetching round",
+  saveRound: "Saving round",
+  trends: "Updating charts",
+  ngapIndex: "Fetching WHS Index from NGAP",
+  ngapScores: "Syncing NGAP history",
+  savePlayer: "Saving player",
+  saveCourse: "Saving course",
+  ghost: "Loading past rounds",
+};
+
+function activityStart(action: string) {
+  activeCalls++;
+  activeLabel = ACTION_LABELS[action] ?? "Syncing";
+  activityWatchers.forEach(fn => fn(activeCalls, activeLabel));
+}
+
+function activityEnd() {
+  activeCalls = Math.max(0, activeCalls - 1);
+  if (activeCalls === 0) activeLabel = "";
+  activityWatchers.forEach(fn => fn(activeCalls, activeLabel));
+}
+
 async function call<T>(action: string, payload: unknown = {}, timeoutMs = CALL_TIMEOUT_MS): Promise<T> {
   const cfg = ensureConfig();
   // Without this a stalled request leaves the UI on skeletons forever
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  activityStart(action);
   let r: Response;
   try {
     r = await fetch(cfg.url, {
@@ -166,6 +252,7 @@ async function call<T>(action: string, payload: unknown = {}, timeoutMs = CALL_T
     });
   } finally {
     clearTimeout(timer);
+    activityEnd();
   }
   if (!r.ok) throw new Error(`${action}: HTTP ${r.status}`);
   const b = await r.json();
@@ -490,8 +577,14 @@ export async function apiRequest(method: string, url: string, data?: unknown): P
 
     if (method === "GET" && seg.length === 3) {
       const s = await load(id);
-      return s ? reply({ round: s.round, players: s.players, scores: s.scores })
-               : reply({ error: "Round not found" }, 404);
+      if (s) return reply({ round: s.round, players: s.players, scores: s.scores });
+
+      // No local copy and no credentials: try the public read, so a shared
+      // link renders for someone who has never configured this device.
+      const pub = await publicRound(id);
+      if (pub) return reply(fromPublicRound(id, pub));
+
+      return reply({ error: "Round not found" }, 404);
     }
 
     if (method === "DELETE" && seg.length === 3) {
@@ -644,6 +737,51 @@ async function hydrateMissingRounds(): Promise<void> {
   } finally {
     hydrateInFlight = false;
   }
+}
+
+/** Reshape the public GET payload into what the scorecard pages expect. */
+function fromPublicRound(id: string, pub: any) {
+  const r = pub.round || {};
+  const p1 = (pub.players || []).find((x: any) => Number(x.position) === 1)
+          || (pub.players || [])[0];
+
+  const round: Round = {
+    id, courseId: r.course_name, courseName: String(r.course_name || ""),
+    courseRating: p1 ? Number(p1.course_rating) : null,
+    slopeRating: p1 ? Number(p1.slope_rating) : null,
+    par: p1 ? Number(p1.par) : null,
+    date: String(r.date || ""), holes: Number(r.holes) || 18,
+    gameType: String(r.game_type || ""),
+    gameOptions: String(r.game_options || "{}"),
+    status: String(r.status || "complete"),
+    pars: String(r.pars || "[]"),
+    holeHandicaps: String(r.hole_handicaps || "[]"),
+  };
+
+  const players: RoundPlayer[] = [];
+  const scores: HoleScore[] = [];
+  (pub.players || []).forEach((p: any) => {
+    players.push({
+      id: String(p.id), roundId: id, name: String(p.name),
+      tee: String(p.tee || ""),
+      courseRating: p.course_rating == null ? null : Number(p.course_rating),
+      slopeRating: p.slope_rating == null ? null : Number(p.slope_rating),
+      par: p.par == null ? null : Number(p.par),
+      handicapIndex: p.handicap_index ?? null,
+      courseHandicap: Number(p.course_handicap) || 0,
+      position: Number(p.position) || 1,
+    });
+    (p.strokes || []).forEach((st: number | null, i: number) => {
+      if (st != null || p.putts?.[i] != null) {
+        scores.push({
+          id: `${p.id}-${i + 1}`, roundId: id, playerId: String(p.id),
+          hole: i + 1, strokes: st, putts: p.putts?.[i] ?? null,
+        });
+      }
+    });
+  });
+
+  return { round, players, scores, readOnly: true };
 }
 
 async function load(id: string): Promise<Stored | null> {
