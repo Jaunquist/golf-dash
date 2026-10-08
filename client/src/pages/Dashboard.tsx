@@ -436,15 +436,14 @@ function DashboardInner() {
     <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="sticky top-0 z-20 bg-background/95 backdrop-blur border-b border-border">
-        <div className="max-w-5xl mx-auto px-4 h-14 flex items-center gap-3">
+        <div className="max-w-5xl mx-auto px-4 h-14 flex items-center gap-2">
           {/* Logo */}
           <svg viewBox="0 0 32 32" width="28" height="28" fill="none" aria-label="Fairway logo">
             <circle cx="16" cy="16" r="15" stroke="currentColor" strokeWidth="2" className="text-primary" />
             <path d="M16 8v12M16 8l-5 8M16 8l5 8" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="text-primary" />
             <circle cx="16" cy="24" r="2" fill="currentColor" className="text-accent" />
           </svg>
-          <h1 className="font-display font-bold text-lg flex-1">Golf Dash</h1>
-          <SignInButton />
+          <h1 className="font-display font-bold text-lg flex-1 truncate">Golf Dash</h1>
           <Button
             variant="ghost"
             size="sm"
@@ -462,6 +461,12 @@ function DashboardInner() {
           >
             <Plus size={15} /> New Round
           </Button>
+        </div>
+
+        {/* Sign-in sits on its own row: the Google widget is a fixed width and
+            squeezed the title and action buttons off a phone screen. */}
+        <div className="max-w-5xl mx-auto px-4 pb-2 flex justify-end">
+          <SignInButton />
         </div>
       </header>
 
