@@ -96,6 +96,28 @@ export function onAuthChange(fn: (s: Session | null) => void) {
  * Exchange a Google ID token for a session this backend minted.
  * Apps Script checks the token really is Google's and really is the owner.
  */
+/**
+ * Apps Script answers with HTML — a login page or an error page — whenever the
+ * deployment is stale, the URL is a /dev link, or access is not set to Anyone.
+ * Parsing that as JSON produces an unreadable error, so name the real cause.
+ */
+async function parseJson(r: Response, what: string): Promise<any> {
+  const text = await r.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    const looksLikeHtml = /^\s*<!DOCTYPE|^\s*<html/i.test(text);
+    if (looksLikeHtml) {
+      throw new Error(
+        `${what} failed: the backend returned a web page, not data. ` +
+        `Usually the Apps Script deployment needs redeploying as a New version, ` +
+        `the URL is a /dev link instead of /exec, or access is not set to "Anyone".`
+      );
+    }
+    throw new Error(`${what} failed: unexpected response from the backend`);
+  }
+}
+
 export async function signInWithGoogle(idToken: string): Promise<Session> {
   const url = publicEndpoint();
   if (!url) throw new Error("No backend configured");
@@ -105,7 +127,8 @@ export async function signInWithGoogle(idToken: string): Promise<Session> {
     body: JSON.stringify({ action: "authenticate", payload: { idToken } }),
     redirect: "follow",
   });
-  const b = await r.json();
+
+  const b = await parseJson(r, "Sign-in");
   if (!b.ok) throw new Error(b.error || "Sign-in failed");
 
   const s: Session = { token: b.data.session, email: b.data.email, name: b.data.name || "" };
@@ -338,7 +361,7 @@ async function call<T>(action: string, payload: unknown = {}, timeoutMs = CALL_T
     activityEnd();
   }
   if (!r.ok) throw new Error(`${action}: HTTP ${r.status}`);
-  const b = await r.json();
+  const b = await parseJson(r, action);
   if (!b.ok) throw new Error(`${action}: ${b.error}`);
   return b.data as T;
 }
