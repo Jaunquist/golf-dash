@@ -40,10 +40,20 @@ export type InsertRound = z.infer<typeof insertRoundSchema>;
 export type Round = typeof rounds.$inferSelect;
 
 // ---- Players in a round ----
+//
+// The tee fields were added when players stopped sharing one set of tees. They
+// are per player rather than per round because a fourball off four different
+// tees needs four ratings, and a score differential computed from the round's
+// rating would be wrong for three of them.
 export const roundPlayers = sqliteTable("round_players", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   roundId: integer("round_id").notNull(),
+  playerId: text("player_id"),                            // link to the saved roster entry, when there is one
   name: text("name").notNull(),
+  tee: text("tee"),                                       // name of the tee played, e.g. "Blue"
+  courseRating: real("course_rating"),                    // rating of THAT tee
+  slopeRating: integer("slope_rating"),                   // slope of THAT tee
+  par: integer("par"),                                    // par from THAT tee
   handicapIndex: real("handicap_index").default(0),       // player's handicap index (stored, not computed)
   courseHandicap: integer("course_handicap").notNull().default(0), // WHS-computed course handicap
   position: integer("position").notNull(),                // 1-4, position 1 = Justin
@@ -54,6 +64,11 @@ export type InsertRoundPlayer = z.infer<typeof insertRoundPlayerSchema>;
 export type RoundPlayer = typeof roundPlayers.$inferSelect;
 
 // ---- Hole scores ----
+//
+// penalties / fairway / mishit are nullable on purpose: null means "never
+// recorded", which is different from zero. Every round played before these
+// existed reads back as null, so an untracked round does not quietly count as
+// a penalty-free one and flatter the averages.
 export const holeScores = sqliteTable("hole_scores", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   roundId: integer("round_id").notNull(),
@@ -61,11 +76,17 @@ export const holeScores = sqliteTable("hole_scores", {
   hole: integer("hole").notNull(),    // 1-18
   strokes: integer("strokes"),        // gross strokes (null = not entered yet)
   putts: integer("putts"),            // putts for this hole
+  penalties: integer("penalties"),    // penalty strokes INCLUDED in `strokes`, counted separately
+  fairway: text("fairway"),           // "hit" | "left" | "right" — par 4s and 5s only
+  mishit: integer("mishit"),          // 1 when the tee shot did not advance properly
 });
 
 export const insertHoleScoreSchema = createInsertSchema(holeScores).omit({ id: true });
 export type InsertHoleScore = z.infer<typeof insertHoleScoreSchema>;
 export type HoleScore = typeof holeScores.$inferSelect;
+
+/** The direction half of the tee-shot result. Distance is `mishit`, separately. */
+export type FairwayResult = "hit" | "left" | "right";
 
 // ---- App settings (key-value) ----
 export const settings = sqliteTable("settings", {
