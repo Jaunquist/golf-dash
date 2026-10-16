@@ -182,8 +182,11 @@ export function statsForRound(detail: RoundDetail): RoundStats | null {
   // WHS differential, always expressed on an 18-hole scale so one axis serves
   // both round lengths. A nine is doubled, which assumes the unplayed nine
   // would have gone the same way — an estimate, and flagged as one.
-  const slope = me.slopeRating ?? null;
-  const cr = me.courseRating ?? null;
+  // Prefer the tee the player actually played. Rounds created before per-player
+  // tees existed carry no rating on the player, so fall back to the round's —
+  // otherwise every one of those rounds silently plots as "no differential".
+  const slope = (me as any).slopeRating ?? (round as any).slopeRating ?? null;
+  const cr = (me as any).courseRating ?? (round as any).courseRating ?? null;
   const nine = holes !== 18;
   let differential: number | null = null;
   if (slope && cr) {
