@@ -1,9 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiRequest, getSession } from "@/lib/queryClient";
-import CountryFlag from "@/components/CountryFlag";
-import { countryName } from "@/lib/countries";
+import { apiRequest, getSession, countryName, normalizeCountry, flagEmoji } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,6 +13,39 @@ import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, Flag, Users, Trophy, ChevronRight, ChevronLeft, Shield, User, Plus, BookOpen, Info, Ghost, Loader2} from "lucide-react";
 import type { GameType, ScoringMode } from "@/lib/gameEngine";
 import type { Course } from "@shared/schema";
+
+/**
+ * Country flag, inlined rather than imported.
+ *
+ * Renders the emoji where the platform has one. Windows ships no flag glyphs,
+ * so Chrome there gets a small monospace code badge instead of tofu. A course
+ * with no country keeps the neutral pin.
+ */
+function CountryFlag({ code, size = 16 }: { code?: string | null; size?: number }) {
+  const cc = normalizeCountry(code);
+  if (!cc) {
+    return <Flag size={size} className="text-muted-foreground/50 shrink-0" aria-label="No country set" />;
+  }
+  const emoji = flagEmoji(cc);
+  const label = countryName(cc);
+  return (
+    <span className="inline-flex items-center shrink-0" title={label}>
+      {emoji ? (
+        <span role="img" aria-label={label}
+              style={{ fontSize: size * 1.15, lineHeight: 1 }}
+              className="select-none">
+          {emoji}
+        </span>
+      ) : (
+        <span aria-label={label}
+              style={{ fontSize: size * 0.62 }}
+              className="font-mono font-bold tracking-tight px-1 py-0.5 rounded bg-muted text-muted-foreground leading-none">
+          {cc}
+        </span>
+      )}
+    </span>
+  );
+}
 
 const DEFAULT_PARS_18 = [4,4,3,4,5,4,3,4,4, 4,3,4,5,4,3,4,4,5];
 const DEFAULT_PARS_9  = [4,4,3,4,5,4,3,4,4];
