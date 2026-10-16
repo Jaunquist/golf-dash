@@ -256,6 +256,7 @@ export interface RoundPlayer {
 export interface HoleScore {
   id: string; roundId: string; playerId: string;
   hole: number; strokes: number | null; putts: number | null;
+  penalties?: number | null; fairway?: string | null; mishit?: number | null;
 }
 interface Bundle { round: Round; players: RoundPlayer[]; scores: HoleScore[]; }
 interface Stored extends Bundle { dirty: boolean; touched: string; }
@@ -437,10 +438,16 @@ function toSheetRound(r: Round) {
 function toSheetPlayer(p: RoundPlayer, scores: HoleScore[]) {
   const strokes: (number | null)[] = Array(18).fill(null);
   const putts: (number | null)[] = Array(18).fill(null);
+  const penalties: (number | null)[] = Array(18).fill(null);
+  const fairways: (string | null)[] = Array(18).fill(null);
+  const mishits: (number | null)[] = Array(18).fill(null);
   scores.filter(s => s.playerId === p.id).forEach(s => {
     if (s.hole >= 1 && s.hole <= 18) {
       strokes[s.hole - 1] = s.strokes;
       putts[s.hole - 1] = s.putts;
+      penalties[s.hole - 1] = (s as any).penalties ?? null;
+      fairways[s.hole - 1] = (s as any).fairway ?? null;
+      mishits[s.hole - 1] = (s as any).mishit ?? null;
     }
   });
   return {
@@ -450,6 +457,7 @@ function toSheetPlayer(p: RoundPlayer, scores: HoleScore[]) {
     par: p.par ?? "",
     handicap_index: p.handicapIndex,
     course_handicap: p.courseHandicap, position: p.position, strokes, putts,
+    penalties, fairways, mishits,
   };
 }
 
@@ -882,7 +890,10 @@ function fromPublicRound(id: string, pub: any) {
         scores.push({
           id: `${p.id}-${i + 1}`, roundId: id, playerId: String(p.id),
           hole: i + 1, strokes: st, putts: p.putts?.[i] ?? null,
-        });
+          penalties: p.penalties?.[i] ?? null,
+          fairway: p.fairways?.[i] || null,
+          mishit: p.mishits?.[i] ?? null,
+        } as any);
       }
     });
   });
@@ -922,7 +933,10 @@ async function load(id: string): Promise<Stored | null> {
       (p.strokes || []).forEach((st: number | null, i: number) => {
         if (st != null || (p.putts && p.putts[i] != null))
           scores.push({ id: `${p.id}-${i + 1}`, roundId: id, playerId: String(p.id),
-                        hole: i + 1, strokes: st, putts: p.putts?.[i] ?? null });
+                        hole: i + 1, strokes: st, putts: p.putts?.[i] ?? null,
+                        penalties: p.penalties?.[i] ?? null,
+                        fairway: p.fairways?.[i] || null,
+                        mishit: p.mishits?.[i] ?? null } as any);
       });
     });
     const stored: Stored = { round, players, scores, dirty: false, touched: new Date().toISOString() };
@@ -995,9 +1009,17 @@ async function setScore(roundId: string, b: any): Promise<HoleScore> {
   const playerId = String(b.playerId), hole = Number(b.hole);
   const strokes = b.strokes == null ? null : Number(b.strokes);
   const putts = b.putts == null ? null : Number(b.putts);
+  // null means "never recorded", which is not the same as zero — an untracked
+  // round must not count as a penalty-free one
+  const penalties = b.penalties == null ? null : Number(b.penalties);
+  const fairway = b.fairway == null || b.fairway === "" ? null : String(b.fairway);
+  const mishit = b.mishit == null ? null : (b.mishit ? 1 : 0);
 
   const scores = s.scores.filter(x => !(x.playerId === playerId && x.hole === hole));
-  const entry: HoleScore = { id: `${playerId}-${hole}`, roundId, playerId, hole, strokes, putts };
+  const entry: HoleScore = {
+    id: `${playerId}-${hole}`, roundId, playerId, hole, strokes, putts,
+    penalties, fairway, mishit,
+  } as HoleScore;
   scores.push(entry);
 
   await save({ ...s, scores });
