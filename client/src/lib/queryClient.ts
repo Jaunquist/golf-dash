@@ -65,7 +65,15 @@ export function setEndpoint(url: string): void {
 
 const SESSION_KEY = "golf-dash-session";
 
-export interface Session { token: string; email: string; name: string }
+export interface Session {
+  token: string;
+  email: string;
+  name: string;
+  /** From the Google profile — used to pre-fill the owner's name on a new round */
+  firstName?: string;
+  role?: "admin" | "member";
+  playerId?: string;
+}
 
 const authWatchers = new Set<(s: Session | null) => void>();
 
@@ -131,7 +139,17 @@ export async function signInWithGoogle(idToken: string): Promise<Session> {
   const b = await parseJson(r, "Sign-in");
   if (!b.ok) throw new Error(b.error || "Sign-in failed");
 
-  const s: Session = { token: b.data.session, email: b.data.email, name: b.data.name || "" };
+  const s: Session = {
+    token: b.data.session,
+    email: b.data.email,
+    name: b.data.name || "",
+    firstName: b.data.firstName || String(b.data.name || "").split(" ")[0] || "",
+    role: b.data.role === "admin" ? "admin" : "member",
+    playerId: b.data.playerId || "",
+  };
+  // A different account must not inherit the last one's cached rounds
+  if (readLastAccount() && readLastAccount() !== s.email) await wipeLocalData();
+  writeLastAccount(s.email);
   setSession(s);
   queryClient.invalidateQueries();
   return s;
@@ -140,6 +158,7 @@ export async function signInWithGoogle(idToken: string): Promise<Session> {
 export async function signOut(): Promise<void> {
   const s = getSession();
   setSession(null);
+  await wipeLocalData();
   if (s) {
     try {
       await fetch(publicEndpoint(), {
@@ -152,9 +171,31 @@ export async function signOut(): Promise<void> {
   queryClient.invalidateQueries();
 }
 
-/** True when this device can write — a Google session, or the legacy secret. */
+/** True when this device is signed in at all — a Google session or the legacy secret. */
 export function canEdit(): boolean {
   return !!(getSession() || readConfig().secret);
+}
+
+export function isAdmin(): boolean {
+  return getSession()?.role === "admin";
+}
+
+/**
+ * True when this device may write to THIS round.
+ *
+ * Being signed in is not enough any more. A round belongs to whoever started
+ * it, and the backend rejects a write from anyone else — so the UI has to ask
+ * the same question, or it offers edit controls that are going to fail.
+ * Admins may edit anything. A round with no owner predates accounts and
+ * belongs to the sheet's owner.
+ */
+export function canEditRound(round: { ownerEmail?: string | null } | null | undefined): boolean {
+  if (!canEdit()) return false;
+  if (isAdmin()) return true;
+  const me = getSession()?.email?.toLowerCase();
+  if (!me) return !!readConfig().secret;   // legacy secret device
+  const owner = String(round?.ownerEmail || "").toLowerCase();
+  return !owner || owner === me;
 }
 
 /**
@@ -242,7 +283,7 @@ export interface RosterPlayer {
   hiUpdated: string; lastPlayed: string;
 }
 export interface Round {
-  id: string; courseId: string | null; courseName: string;
+  id: string; courseId: string | null; courseName: string; ownerEmail?: string | null;
   courseRating: number | null; slopeRating: number | null; date: string;
   holes: number; par: number | null; gameType: string; gameOptions: string;
   status: string; pars?: string; holeHandicaps?: string;
@@ -264,6 +305,31 @@ interface Stored extends Bundle { dirty: boolean; touched: string; }
 // ── IndexedDB ──────────────────────────────────────────────────────────────
 
 const DB = "golf-dash", ROUNDS = "rounds", META = "meta";
+const ACCOUNT_KEY = "golf-dash-account";
+
+/**
+ * The last account to use this device.
+ *
+ * Rounds live in one IndexedDB store with no owner on them, so if a second
+ * person signs in on the same phone they would see whatever the first person
+ * had cached. Rather than partition the store, the cache is wiped whenever the
+ * signed-in address changes — the server is the source of truth and it
+ * re-hydrates on the next load.
+ */
+function readLastAccount(): string {
+  try { return localStorage.getItem(ACCOUNT_KEY) || ""; } catch { return ""; }
+}
+function writeLastAccount(email: string): void {
+  try { localStorage.setItem(ACCOUNT_KEY, email); } catch { /* storage blocked */ }
+}
+
+export async function wipeLocalData(): Promise<void> {
+  try {
+    await op<void>(ROUNDS, "readwrite", s => s.clear());
+    await op<void>(META, "readwrite", s => s.clear());
+  } catch { /* nothing cached, or storage blocked */ }
+  queryClient.clear();
+}
 let dbp: Promise<IDBDatabase> | null = null;
 
 function db(): Promise<IDBDatabase> {
@@ -338,6 +404,8 @@ function activityEnd() {
   if (activeCalls === 0) activeLabel = "";
   activityWatchers.forEach(fn => fn(activeCalls, activeLabel));
 }
+
+export async function adminUsage(): Promise<any> { return call("usage", {}); }
 
 async function call<T>(action: string, payload: unknown = {}, timeoutMs = CALL_TIMEOUT_MS): Promise<T> {
   const cfg = ensureConfig();
@@ -432,6 +500,7 @@ function toSheetRound(r: Round) {
     holes: r.holes, game_type: r.gameType,
     game_options: r.gameOptions, pars: r.pars ?? "[]",
     hole_handicaps: r.holeHandicaps ?? "[]", status: r.status,
+    owner_email: (r as any).ownerEmail ?? "",
   };
 }
 
@@ -789,6 +858,8 @@ function refreshRemoteRounds(): void {
         gameType: String(r.game_type || ""),
         gameOptions: String(r.game_options || "{}"),
         status: String(r.status || "complete"),
+    ownerEmail: r.owner_email ? String(r.owner_email) : null,
+        ownerEmail: r.owner_email ? String(r.owner_email) : null,
         pars: String(r.pars || "[]"),
         holeHandicaps: String(r.hole_handicaps || "[]"),
       }));
@@ -868,6 +939,7 @@ function fromPublicRound(id: string, pub: any) {
     gameType: String(r.game_type || ""),
     gameOptions: String(r.game_options || "{}"),
     status: String(r.status || "complete"),
+    ownerEmail: r.owner_email ? String(r.owner_email) : null,
     pars: String(r.pars || "[]"),
     holeHandicaps: String(r.hole_handicaps || "[]"),
   };
@@ -916,6 +988,7 @@ async function load(id: string): Promise<Stored | null> {
       date: String(r.round.date), holes: Number(r.round.holes),
       gameType: String(r.round.game_type), gameOptions: String(r.round.game_options || "{}"),
       status: String(r.round.status || "active"),
+      ownerEmail: r.round.owner_email ? String(r.round.owner_email) : null,
       pars: String(r.round.pars || "[]"), holeHandicaps: String(r.round.hole_handicaps || "[]"),
     };
     const players: RoundPlayer[] = [];

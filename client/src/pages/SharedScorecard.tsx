@@ -1,20 +1,23 @@
 /**
- * SharedScorecard — public score-entry view for fellow players.
- * Accessed via /#/shared/:roundId
- * - No navigation bar, no access to dashboard/courses/rounds history
- * - Score entry enabled for active rounds (same cell UX as main Scorecard)
- * - Read-only totals + legend
- * - Cannot finish, delete, or change game settings
+ * SharedScorecard — the view behind /#/shared/:roundId
+ *
+ * Opens without signing in, because the point of the link is that a playing
+ * partner can look at it. Editing is a different matter: the backend rejects an
+ * unauthenticated write, so a stranger's edit would silently fail. Edit
+ * affordances therefore appear only once this device can actually write.
+ *
+ * No navigation, no dashboard, no finishing or deleting the round.
  */
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useParams } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, canEditRound, onAuthChange } from "@/lib/queryClient";
+import { ReadOnlyBar } from "@/components/AuthGate";
+import RouteFallback from "@/components/RouteFallback";
 import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { Ghost } from "lucide-react";
+import { Ghost, Lock } from "lucide-react";
 import {
   computeGameResults, cumulativeTotals, scoreCssClass, handicapStrokesOnHole,
   type Player as GPlayer
@@ -52,11 +55,24 @@ export default function SharedScorecard() {
   const { id } = useParams<{ id: string }>();
   const { toast } = useToast();
   const qc = useQueryClient();
+  // Round IDs are client-generated UUIDs, not numbers — parseInt would give NaN
   const roundId = id!;
 
+  /**
+   * Live edit rights. onAuthChange fires immediately with the current session
+   * and again on every change, so signing in from the banner below flips the
+   * card into edit mode without a reload.
+   */
+  const [authTick, setAuthTick] = useState(0);
+  useEffect(() => onAuthChange(() => setAuthTick(t => t + 1)), []);
+  void authTick;
+
   const [pending, setPending] = useState<Record<string, { strokes: string; putts: string }>>({});
-  const [activeCell, setActiveCell] = useState<{ playerId: number; hole: number } | null>(null);
+  const [activeCell, setActiveCell] = useState<{ playerId: string; hole: number } | null>(null);
   const cellFocusRef = useRef<Record<string, boolean>>({});
+
+  // Leaving an open cell behind when rights are lost would let a stale input save
+  useEffect(() => { if (readOnly) { setActiveCell(null); setPending({}); } }, [readOnly]);
 
   const { data, isLoading } = useQuery<{ round: Round; players: RoundPlayer[]; scores: HoleScore[] }>({
     queryKey: ["/api/rounds", roundId],
@@ -65,6 +81,10 @@ export default function SharedScorecard() {
       return r.json();
     },
   });
+
+  // Signed in is not the same as allowed: a shared link to someone else's
+  // round stays read-only even for an account holder.
+  const readOnly = !canEditRound(data?.round as any);
 
   const gameOptsRaw = data?.round ? JSON.parse(data.round.gameOptions) : {};
   const isSoloGhost = gameOptsRaw?.solo === true && gameOptsRaw?.ghost === true;
@@ -79,7 +99,7 @@ export default function SharedScorecard() {
   });
 
   const saveMutation = useMutation({
-    mutationFn: async ({ playerId, hole, strokes, putts }: { playerId: number; hole: number; strokes: number | null; putts: number | null }) => {
+    mutationFn: async ({ playerId, hole, strokes, putts }: { playerId: string; hole: number; strokes: number | null; putts: number | null }) => {
       const r = await apiRequest("PUT", `/api/rounds/${roundId}/scores`, { playerId, hole, strokes, putts });
       return r.json();
     },
@@ -87,18 +107,20 @@ export default function SharedScorecard() {
     onError: () => toast({ title: "Save failed", variant: "destructive" }),
   });
 
-  const getPendingKey = (playerId: number, hole: number) => `${playerId}_${hole}`;
+  const getPendingKey = (playerId: string, hole: number) => `${playerId}_${hole}`;
 
-  const handleCellChange = useCallback((playerId: number, hole: number, field: "strokes" | "putts", value: string) => {
+  const handleCellChange = useCallback((playerId: string, hole: number, field: "strokes" | "putts", value: string) => {
+    if (readOnly) return;
     const key = getPendingKey(playerId, hole);
     setPending(prev => ({
       ...prev,
       [key]: { strokes: prev[key]?.strokes ?? "", putts: prev[key]?.putts ?? "", [field]: value }
     }));
-  }, []);
+  }, [readOnly]);
 
-  const handleCellBlur = useCallback((playerId: number, hole: number) => {
+  const handleCellBlur = useCallback((playerId: string, hole: number) => {
     setTimeout(() => {
+      if (readOnly) return;
       const key = getPendingKey(playerId, hole);
       if (cellFocusRef.current[key]) return;
       const edit = pending[key];
@@ -113,22 +135,29 @@ export default function SharedScorecard() {
       setPending(prev => { const n = { ...prev }; delete n[key]; return n; });
       setActiveCell(null);
     }, 120);
-  }, [pending, saveMutation]);
+  }, [pending, saveMutation, readOnly]);
 
-  const handleCellFocusIn = useCallback((playerId: number, hole: number) => {
+  const handleCellFocusIn = useCallback((playerId: string, hole: number) => {
     cellFocusRef.current[getPendingKey(playerId, hole)] = true;
   }, []);
-  const handleCellFocusOut = useCallback((playerId: number, hole: number) => {
+  const handleCellFocusOut = useCallback((playerId: string, hole: number) => {
     cellFocusRef.current[getPendingKey(playerId, hole)] = false;
     handleCellBlur(playerId, hole);
   }, [handleCellBlur]);
 
-  if (isLoading) return (
-    <div className="min-h-screen bg-background p-4 space-y-4">
-      <Skeleton className="h-14 w-full" />
-      <Skeleton className="h-64 w-full" />
-    </div>
-  );
+  /** A tap on a locked cell explains itself rather than doing nothing. */
+  const handleCellTap = useCallback((playerId: string, hole: number, isActive: boolean) => {
+    if (readOnly) {
+      toast({
+        title: "Sign in to edit scores",
+        description: "This link opens read-only. Use Sign in at the top to enter scores.",
+      });
+      return;
+    }
+    if (!isActive) setActiveCell({ playerId, hole });
+  }, [readOnly, toast]);
+
+  if (isLoading) return <RouteFallback kind="scorecard" />;
   if (!data) return <div className="p-8 text-center text-muted-foreground">Round not found.</div>;
 
   const { round, players, scores } = data;
@@ -138,6 +167,9 @@ export default function SharedScorecard() {
   const holes = round.holes;
   const isSoloRound = gameOpts?.solo === true;
   const isTeamGame = TEAM_GAME_TYPES.includes(round.gameType);
+
+  // One switch for every edit affordance on the page
+  const canEnterScores = round.status === "active" && !readOnly;
 
   const scoreLookup: Record<string, HoleScore> = {};
   scores.forEach(s => { scoreLookup[`${s.playerId}_${s.hole}`] = s; });
@@ -161,7 +193,7 @@ export default function SharedScorecard() {
   const front = Array.from({ length: Math.min(9, holes) }, (_, i) => i + 1);
   const back = holes === 18 ? Array.from({ length: 9 }, (_, i) => i + 10) : [];
 
-  function getCellValue(playerId: number, hole: number, field: "strokes" | "putts"): string {
+  function getCellValue(playerId: string, hole: number, field: "strokes" | "putts"): string {
     const key = getPendingKey(playerId, hole);
     if (pending[key]?.[field] !== undefined && pending[key][field] !== "") return pending[key][field];
     const s = scoreLookup[`${playerId}_${hole}`];
@@ -170,7 +202,7 @@ export default function SharedScorecard() {
     return v == null ? "" : String(v);
   }
 
-  function getSectionTotal(playerId: number, holeList: number[], field: "strokes" | "putts"): number | null {
+  function getSectionTotal(playerId: string, holeList: number[], field: "strokes" | "putts"): number | null {
     let total = 0, hasAny = false;
     for (const h of holeList) {
       const v = getCellValue(playerId, h, field);
@@ -183,7 +215,7 @@ export default function SharedScorecard() {
     return holeList.reduce((s, h) => s + (pars[h - 1] ?? 4), 0);
   }
 
-  function getNetTotal(playerId: number, holeList: number[]): { net: number; playedPar: number } | null {
+  function getNetTotal(playerId: string, holeList: number[]): { net: number; playedPar: number } | null {
     const player = players.find(p => p.id === playerId);
     if (!player) return null;
     let total = 0, hasAny = false, playedPar = 0;
@@ -205,7 +237,7 @@ export default function SharedScorecard() {
         <table className="w-full text-xs border-collapse min-w-[600px]">
           <thead>
             <tr className="bg-primary/8 border-b border-border">
-              <th className="text-left px-2 py-2 font-semibold text-muted-foreground w-20 sticky left-0 bg-primary/8 z-10">Player</th>
+              <th className="text-left px-2 py-2 font-semibold text-muted-foreground w-20 sticky left-0 bg-card z-[5]">Player</th>
               {holeList.map(h => (
                 <th key={h} className="text-center px-1 py-2 font-semibold w-10">
                   <div>{h}</div>
@@ -225,7 +257,7 @@ export default function SharedScorecard() {
               const playerColor = getPlayerColor(pi, player, isTeamGame);
               return (
                 <tr key={player.id} className={`border-b border-border/50 ${pi % 2 === 0 ? "" : "bg-muted/20"}`}>
-                  <td className="px-2 py-1.5 sticky left-0 bg-card z-10">
+                  <td className="px-2 py-1.5 sticky left-0 bg-card z-[5]">
                     <div className={`font-semibold truncate max-w-[70px] ${playerColor}`}>{player.name}</div>
                     <div className="text-[9px] text-muted-foreground">HCP {player.courseHandicap ?? "—"}</div>
                   </td>
@@ -239,18 +271,17 @@ export default function SharedScorecard() {
                     const isWinner = hr?.winners.includes(player.id);
                     const cssClass = scoreCssClass(strInt, pars[h - 1] ?? 4);
                     const isActive = activeCell?.playerId === player.id && activeCell?.hole === h;
-                    const isEditable = round.status === "active";
                     const cellKey = getPendingKey(player.id, h);
 
                     return (
                       <td key={h} className="text-center p-0.5">
                         <div
                           className={`relative rounded w-9 h-10 mx-auto flex flex-col items-center justify-center
-                            ${isEditable ? "cursor-pointer" : "cursor-default"}
+                            ${canEnterScores ? "cursor-pointer" : "cursor-default"}
                             border ${isWinner ? "border-accent bg-accent/10" : "border-transparent"}
-                            ${isActive ? "ring-2 ring-primary" : isEditable ? "hover:border-border" : ""}`}
+                            ${isActive ? "ring-2 ring-primary" : canEnterScores ? "hover:border-border" : ""}`}
                           data-testid={`score-cell-${player.id}-${h}`}
-                          onClick={() => isEditable && !isActive && setActiveCell({ playerId: player.id, hole: h })}
+                          onClick={() => round.status === "active" && handleCellTap(player.id, h, isActive)}
                         >
                           {strokesOnHole > 0 && (
                             <div className="absolute top-0.5 left-0.5 flex gap-0.5">
@@ -259,7 +290,7 @@ export default function SharedScorecard() {
                               ))}
                             </div>
                           )}
-                          {isActive && isEditable ? (
+                          {isActive && canEnterScores ? (
                             <div
                               className="flex flex-col gap-0.5"
                               onFocus={() => handleCellFocusIn(player.id, h)}
@@ -310,7 +341,7 @@ export default function SharedScorecard() {
             {/* Ghost row */}
             {isSoloGhost && ghostData && (
               <tr className="border-b border-border/30 opacity-50">
-                <td className="px-2 py-1.5 sticky left-0 bg-card z-10">
+                <td className="px-2 py-1.5 sticky left-0 bg-card z-[5]">
                   <div className="flex items-center gap-1 text-muted-foreground">
                     <Ghost size={11} />
                     <span className="text-[10px] font-semibold">Best</span>
@@ -339,7 +370,7 @@ export default function SharedScorecard() {
             {/* Points row */}
             {!isSoloRound && (
               <tr className="bg-primary/5 border-t-2 border-primary/20">
-                <td className="px-2 py-1.5 text-xs font-semibold text-primary sticky left-0 bg-primary/5 z-10">Points</td>
+                <td className="px-2 py-1.5 text-xs font-semibold text-primary sticky left-0 bg-card z-[5]">Points</td>
                 {holeList.map(h => {
                   const hr = holeResults.find(r => r.hole === h);
                   return (
@@ -521,13 +552,29 @@ export default function SharedScorecard() {
             {!isSoloRound && (
               <Badge variant="outline" className="text-[10px] py-0 px-1.5 text-muted-foreground border-dashed">{smShort[sm] ?? sm}</Badge>
             )}
+            {readOnly && (
+              <Badge variant="outline" className="text-[10px] py-0 px-1.5 gap-1 text-muted-foreground border-dashed ml-auto">
+                <Lock size={9} /> Read-only
+              </Badge>
+            )}
           </div>
         </div>
       </header>
 
+      {/* Sign-in offer. Renders nothing once this device can write. */}
+      <ReadOnlyBar ownerEmail={(round as any).ownerEmail} />
+
       <main className="max-w-5xl mx-auto px-3 py-4 space-y-4">
         {round.status === "active" && (
-          <p className="text-xs text-muted-foreground text-center">Tap a cell to enter strokes and putts. Putts appear as superscript. Dots = handicap strokes.</p>
+          canEnterScores ? (
+            <p className="text-xs text-muted-foreground text-center">
+              Tap a cell to enter strokes and putts. Putts appear as superscript. Dots = handicap strokes.
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground text-center">
+              Scores update live as they're entered. Dots = handicap strokes; putts appear as superscript.
+            </p>
+          )
         )}
 
         {/* Legend */}
@@ -565,7 +612,7 @@ export default function SharedScorecard() {
 
         {/* Footer note */}
         <p className="text-[10px] text-muted-foreground text-center pb-4">
-          Shared by Golf Dash · View only — scores update live
+          Shared by Golf Dash · {readOnly ? "View only — scores update live" : "Signed in — your edits save to the round"}
         </p>
       </main>
     </div>

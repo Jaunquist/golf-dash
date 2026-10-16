@@ -21,6 +21,7 @@ import { statsForRounds, type RoundDetail, type RoundStats } from "@/lib/roundSt
 import TrendChart from "@/components/TrendChart";
 import InsightPanel from "@/components/InsightPanel";
 import PerformancePanel from "@/components/PerformancePanel";
+import AdminPanel from "@/components/AdminPanel";
 import AuthGate, { SignInButton } from "@/components/AuthGate";
 
 /**
@@ -550,6 +551,9 @@ function DashboardInner() {
           </button>
           {showNgap && <div className="mt-4"><PerformancePanel /></div>}
         </section>
+
+        {/* Admin — renders nothing for a member account */}
+        <AdminPanel />
 
         {/* 8 · History */}
         <section>

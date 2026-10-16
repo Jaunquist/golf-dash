@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { apiRequest, getSession } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -178,8 +178,14 @@ export default function NewRound() {
 
   // ── Players step ──────────────────────────────────────────────────────
   // Each player now stores a handicapIndex (raw) and courseHandicap (computed or entered)
+  // Position 1 is whoever is starting this round, named from their Google
+  // profile rather than hardcoded — the app has more than one user now.
+  const myFirstName = getSession()?.firstName
+    || getSession()?.name?.split(" ")[0]
+    || "";
+
   const [players, setPlayers] = useState([
-    { name: "Justin", handicapIndex: "", courseHandicap: "", tee: "", playerId: "", position: 1, active: true },
+    { name: myFirstName, handicapIndex: "", courseHandicap: "", tee: "", playerId: "", position: 1, active: true },
     { name: "",        handicapIndex: "",  courseHandicap: "", tee: "", playerId: "", position: 2, active: false },
     { name: "",        handicapIndex: "",  courseHandicap: "", tee: "", playerId: "", position: 3, active: false },
     { name: "",        handicapIndex: "",  courseHandicap: "", tee: "", playerId: "", position: 4, active: false },

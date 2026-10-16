@@ -189,19 +189,35 @@ export function SignInButton({ compact = false }: { compact?: boolean }) {
   return <GoogleButton />;
 }
 
-/** Banner for a scorecard being viewed without edit rights. */
-export function ReadOnlyBar() {
+/**
+ * Banner for a scorecard being viewed without edit rights.
+ *
+ * There are two different reasons to be read-only and they need different
+ * words. Not signed in: signing in may help, so offer the button. Signed in
+ * but looking at someone else's round: signing in again changes nothing, and
+ * offering it would be a lie — say who owns it instead.
+ */
+export function ReadOnlyBar({ ownerEmail }: { ownerEmail?: string | null } = {}) {
   const [session, setSession] = useState<Session | null>(null);
   useEffect(() => onAuthChange(setSession), []);
-  if (session || canEdit()) return null;
+
+  const signedIn = !!session || canEdit();
+  const owner = String(ownerEmail || "").trim();
+  const someoneElses =
+    signedIn && !!owner && owner.toLowerCase() !== session?.email?.toLowerCase();
+
+  // Signed in and it is your own round: nothing to say
+  if (signedIn && !someoneElses) return null;
 
   return (
     <div className="sticky top-14 z-10 bg-accent/10 border-b border-accent/30
                     px-4 py-2 flex items-center justify-between gap-3 flex-wrap">
       <p className="text-xs text-muted-foreground">
-        Viewing only — sign in to edit scores.
+        {someoneElses
+          ? `Viewing only — this round belongs to ${owner.split("@")[0]}.`
+          : "Viewing only — sign in to edit scores."}
       </p>
-      <GoogleButton />
+      {!signedIn && <GoogleButton />}
     </div>
   );
 }
