@@ -1,8 +1,23 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import * as SheetPrimitive from "@radix-ui/react-dialog";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
 import { scoreCssClass } from "@/lib/gameEngine";
+import type { FairwayResult } from "@shared/schema";
+
+/**
+ * Everything one hole can record.
+ *
+ * Passed as an object rather than four more positional arguments, so adding a
+ * field later does not mean editing every call site in the scorecard again.
+ */
+export interface HoleEntry {
+  strokes: number;
+  putts: number;
+  penalties: number;
+  fairway: FairwayResult | null;
+  mishit: boolean;
+}
 
 interface HoleInputSheetProps {
   open: boolean;
@@ -16,11 +31,14 @@ interface HoleInputSheetProps {
   strokesOnHole: number;
   initialStrokes: number | null; // null = no score yet → defaults to par
   initialPutts: number | null;
-  onSave: (hole: number, strokes: number, putts: number) => void;
-  onDelete: (hole: number) => void;   // reset / clear this hole's score
-  onClose: () => void;                // close WITHOUT saving
-  onNavNext: (hole: number, strokes: number, putts: number) => void;  // save + go next
-  onNavPrev: (hole: number, strokes: number, putts: number) => void;  // save + go prev
+  initialPenalties?: number | null;
+  initialFairway?: FairwayResult | null;
+  initialMishit?: boolean | null;
+  onSave: (hole: number, entry: HoleEntry) => void;
+  onDelete: (hole: number) => void;        // reset / clear this hole's score
+  onClose: () => void;                     // close WITHOUT saving
+  onNavNext: (hole: number, entry: HoleEntry) => void;  // save + go next
+  onNavPrev: (hole: number, entry: HoleEntry) => void;  // save + go prev
 }
 
 // Vertical stepper: label → + → value → −
@@ -71,6 +89,43 @@ function Stepper({
   );
 }
 
+/**
+ * Compact horizontal counter for things that are usually zero.
+ *
+ * Penalties get this rather than a third tall stepper because most holes have
+ * none: the common path should cost no taps and no vertical space, and three
+ * large steppers across would crowd a phone.
+ */
+function MiniCounter({ label, value, min, max, onChange }: {
+  label: string; value: number; min: number; max: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[11px] text-muted-foreground flex-1">{label}</span>
+      <button
+        onPointerDown={e => { e.preventDefault(); if (value > min) onChange(value - 1); }}
+        style={{ opacity: value > min ? 1 : 0.3 }}
+        className="w-8 h-8 rounded-lg bg-muted active:bg-muted/60 flex items-center justify-center text-lg font-light select-none active:scale-95 transition-transform"
+      >
+        −
+      </button>
+      <span className={`w-6 text-center text-base font-bold tabular-nums select-none ${
+        value > 0 ? "text-destructive" : "text-muted-foreground/50"
+      }`}>
+        {value}
+      </span>
+      <button
+        onPointerDown={e => { e.preventDefault(); if (value < max) onChange(value + 1); }}
+        style={{ opacity: value < max ? 1 : 0.3 }}
+        className="w-8 h-8 rounded-lg bg-muted active:bg-muted/60 flex items-center justify-center text-lg font-light select-none active:scale-95 transition-transform"
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
 export default function HoleInputSheet({
   open,
   hole,
@@ -83,6 +138,9 @@ export default function HoleInputSheet({
   strokesOnHole,
   initialStrokes,
   initialPutts,
+  initialPenalties,
+  initialFairway,
+  initialMishit,
   onSave,
   onDelete,
   onClose,
@@ -91,23 +149,41 @@ export default function HoleInputSheet({
 }: HoleInputSheetProps) {
   const [strokes, setStrokes] = useState<number>(initialStrokes ?? par);
   const [putts, setPutts] = useState<number>(initialPutts ?? 0);
+  const [penalties, setPenalties] = useState<number>(initialPenalties ?? 0);
+  const [fairway, setFairway] = useState<FairwayResult | null>(initialFairway ?? null);
+  const [mishit, setMishit] = useState<boolean>(!!initialMishit);
   const [puttWarn, setPuttWarn] = useState(false);
+
+  // A par 3 has no tee shot to a fairway, so the control does not appear there
+  const hasFairway = par >= 4;
 
   // Reset local state whenever the sheet opens on a new hole
   useEffect(() => {
     setStrokes(initialStrokes ?? par);
     setPutts(initialPutts ?? 0);
+    setPenalties(initialPenalties ?? 0);
+    setFairway(initialFairway ?? null);
+    setMishit(!!initialMishit);
     setPuttWarn(false);
-  }, [hole, initialStrokes, initialPutts, par]);
+  }, [hole, initialStrokes, initialPutts, initialPenalties, initialFairway, initialMishit, par]);
+
+  const entry = (): HoleEntry => ({
+    strokes,
+    putts,
+    penalties,
+    fairway: hasFairway ? fairway : null,
+    mishit: hasFairway ? mishit : false,
+  });
 
   const handlePuttsInc = () => {
     if (putts < strokes) setPutts(p => p + 1);
     else { setPuttWarn(true); setTimeout(() => setPuttWarn(false), 2500); }
   };
 
-  const handleStrokesDec = (next: number) => {
+  const handleStrokesChange = (next: number) => {
     setStrokes(next);
-    if (putts > next) setPutts(next); // clamp putts
+    if (putts > next) setPutts(next);          // clamp putts
+    if (penalties > next) setPenalties(next);  // and penalties
   };
 
   const scoreDiff = strokes - par;
@@ -120,6 +196,12 @@ export default function HoleInputSheet({
     scoreDiff === 3  ? "Triple" :
     `+${scoreDiff}`;
   const cssClass = scoreCssClass(strokes, par);
+
+  const FAIRWAYS: { key: FairwayResult; label: string }[] = [
+    { key: "left",  label: "Left" },
+    { key: "hit",   label: "Fairway" },
+    { key: "right", label: "Right" },
+  ];
 
   return (
     <SheetPrimitive.Root
@@ -143,7 +225,7 @@ export default function HoleInputSheet({
             "data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom",
             "duration-300",
           ].join(" ")}
-          style={{ maxHeight: "72vh" }}
+          style={{ maxHeight: "88vh" }}
           onOpenAutoFocus={e => e.preventDefault()}
           // Intercept Radix close-on-escape — treat escape same as backdrop (no save)
           onEscapeKeyDown={() => onClose()}
@@ -173,7 +255,7 @@ export default function HoleInputSheet({
           <div className="flex items-center justify-between px-4 py-3 bg-muted/30 shrink-0">
             <button
               onPointerDown={e => { e.preventDefault(); }}
-              onClick={() => { if (hole > 1) onNavPrev(hole, strokes, putts); }}
+              onClick={() => { if (hole > 1) onNavPrev(hole, entry()); }}
               disabled={hole <= 1}
               className="w-10 h-10 rounded-full bg-muted flex items-center justify-center disabled:opacity-30 active:scale-95 transition-transform"
             >
@@ -185,7 +267,7 @@ export default function HoleInputSheet({
             </div>
             <button
               onPointerDown={e => { e.preventDefault(); }}
-              onClick={() => { if (hole < totalHoles) onNavNext(hole, strokes, putts); }}
+              onClick={() => { if (hole < totalHoles) onNavNext(hole, entry()); }}
               disabled={hole >= totalHoles}
               className="w-10 h-10 rounded-full bg-muted flex items-center justify-center disabled:opacity-30 active:scale-95 transition-transform"
             >
@@ -193,49 +275,111 @@ export default function HoleInputSheet({
             </button>
           </div>
 
-          {/* Score badge */}
-          <div className="flex justify-center pt-2 shrink-0">
-            <span className={`text-xs font-semibold px-3 py-0.5 rounded-full border ${cssClass}`}>
-              {scoreLabel}
-            </span>
-          </div>
-
-          {/* Putts warning */}
-          {puttWarn && (
-            <div className="mx-5 mt-2 px-3 py-1.5 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive text-xs font-medium text-center shrink-0">
-              Putts can't exceed strokes
+          {/* Scrolls if a short phone cannot fit the tee row */}
+          <div className="overflow-y-auto">
+            {/* Score badge */}
+            <div className="flex justify-center pt-2 shrink-0">
+              <span className={`text-xs font-semibold px-3 py-0.5 rounded-full border ${cssClass}`}>
+                {scoreLabel}
+              </span>
             </div>
-          )}
 
-          {/* Steppers */}
-          <div className="flex items-start justify-center gap-8 px-6 pt-3 pb-2">
-            <Stepper
-              label="Strokes"
-              value={strokes}
-              min={1}
-              max={20}
-              onChange={v => handleStrokesDec(v)}
-            />
-            <div className="w-px self-stretch bg-border/40 mt-6" />
-            <Stepper
-              label="Putts"
-              value={putts}
-              min={0}
-              max={strokes}
-              onChange={setPutts}
-              onAttemptExceedMax={handlePuttsInc}
-            />
+            {/* Putts warning */}
+            {puttWarn && (
+              <div className="mx-5 mt-2 px-3 py-1.5 rounded-xl bg-destructive/10 border border-destructive/30 text-destructive text-xs font-medium text-center shrink-0">
+                Putts can't exceed strokes
+              </div>
+            )}
+
+            {/* Steppers */}
+            <div className="flex items-start justify-center gap-8 px-6 pt-3 pb-2">
+              <Stepper
+                label="Strokes"
+                value={strokes}
+                min={1}
+                max={20}
+                onChange={handleStrokesChange}
+              />
+              <div className="w-px self-stretch bg-border/40 mt-6" />
+              <Stepper
+                label="Putts"
+                value={putts}
+                min={0}
+                max={strokes}
+                onChange={setPutts}
+                onAttemptExceedMax={handlePuttsInc}
+              />
+            </div>
+
+            {/* Detail: both optional, both default to untouched */}
+            <div className="mx-5 mt-1 mb-2 rounded-2xl border border-border/60 divide-y divide-border/60">
+              <div className="px-3 py-2">
+                <MiniCounter
+                  label="Penalty strokes"
+                  value={penalties}
+                  min={0}
+                  max={strokes}
+                  onChange={setPenalties}
+                />
+              </div>
+
+              {hasFairway && (
+                <div className="px-3 py-2.5 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] text-muted-foreground shrink-0">Off the tee</span>
+                    {fairway && (
+                      <button
+                        onPointerDown={e => { e.preventDefault(); setFairway(null); }}
+                        className="text-[10px] text-muted-foreground/60 hover:text-foreground ml-auto"
+                      >
+                        clear
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex gap-1.5">
+                    {FAIRWAYS.map(f => (
+                      <button
+                        key={f.key}
+                        onPointerDown={e => {
+                          e.preventDefault();
+                          setFairway(cur => (cur === f.key ? null : f.key));
+                        }}
+                        className={`flex-1 h-9 rounded-xl text-xs font-semibold select-none active:scale-95 transition-all border ${
+                          fairway === f.key
+                            ? "bg-primary text-primary-foreground border-primary"
+                            : "bg-muted/50 border-transparent text-muted-foreground"
+                        }`}
+                      >
+                        {f.label}
+                      </button>
+                    ))}
+                  </div>
+                  {/* Distance is its own axis: a drive can be short AND left, so
+                      this is a separate flag rather than a fourth direction */}
+                  <button
+                    onPointerDown={e => { e.preventDefault(); setMishit(m => !m); }}
+                    className={`w-full h-8 rounded-xl text-[11px] font-semibold select-none active:scale-95 transition-all border ${
+                      mishit
+                        ? "bg-destructive/15 text-destructive border-destructive/40"
+                        : "bg-muted/50 border-transparent text-muted-foreground"
+                    }`}
+                  >
+                    {mishit ? "Mishit — didn't advance" : "Mishit?"}
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Actions */}
-          <div className="px-5 pt-2 pb-8 shrink-0 flex flex-col gap-2">
+          <div className="px-5 pt-2 pb-8 shrink-0 flex flex-col gap-2 border-t border-border/40">
             {/* Primary: Save & Close */}
             <Button
               className="w-full h-12 text-base rounded-2xl"
               onPointerDown={e => e.preventDefault()}
-              onClick={() => { onSave(hole, strokes, putts); onClose(); }}
+              onClick={() => { onSave(hole, entry()); onClose(); }}
             >
-              Save & Close
+              Save &amp; Close
             </Button>
             {/* Secondary: Delete Score */}
             <button
