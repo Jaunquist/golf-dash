@@ -176,6 +176,42 @@ export function canEdit(): boolean {
   return !!(getSession() || readConfig().secret);
 }
 
+/**
+ * Re-read who we are from the backend and update the stored session.
+ *
+ * A session token carries whatever fields existed when it was minted, and it
+ * lasts 30 days. A token issued before roles existed has no role on it, so the
+ * owner silently renders as a member until the token expires — which is how
+ * Justin ended up looking at the member dashboard on his own account.
+ *
+ * Asking the backend on load fixes that without a sign-out, and means a role
+ * change takes effect on the next app open rather than in a month.
+ */
+export async function refreshIdentity(): Promise<Session | null> {
+  const cur = getSession();
+  if (!cur) return null;
+  try {
+    const me = await call<{ email: string; name: string; firstName: string;
+                            role: string; playerId: string }>("whoami", {});
+    const next: Session = {
+      ...cur,
+      name: me.name || cur.name,
+      firstName: me.firstName || cur.firstName,
+      role: me.role === "admin" ? "admin" : "member",
+      playerId: me.playerId || cur.playerId,
+    };
+    // Only write when something actually changed, so this does not wake every
+    // auth watcher on each load
+    if (next.role !== cur.role || next.firstName !== cur.firstName ||
+        next.playerId !== cur.playerId || next.name !== cur.name) {
+      setSession(next);
+    }
+    return next;
+  } catch {
+    return cur;   // offline, or an older backend without whoami
+  }
+}
+
 export function isAdmin(): boolean {
   return getSession()?.role === "admin";
 }
@@ -496,6 +532,30 @@ if (typeof window !== "undefined") {
 
 // ── Shape conversion ───────────────────────────────────────────────────────
 
+/**
+ * Normalise whatever the sheet gives us for a date into plain YYYY-MM-DD.
+ *
+ * A Date typed into Google Sheets comes back from Apps Script as a full ISO
+ * timestamp — "2026-07-31T07:00:00.000Z" — not the "2026-07-31" the app
+ * assumes everywhere it slices, sorts or groups by date. That leaked straight
+ * onto the chart axis as "07/31T07:00:00.000Z".
+ *
+ * Deliberately takes the date part of the string rather than parsing to a Date
+ * and re-formatting: the timestamp carries a UTC midnight-plus-offset that, in
+ * Manila or Tokyo, would shift a round onto the wrong calendar day.
+ */
+function toISODate(raw: unknown): string {
+  const v = String(raw ?? "").trim();
+  if (!v) return "";
+  const m = v.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  // A locale string such as "7/31/2026" — fall back to parsing
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return v;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 function toSheetRound(r: Round) {
   return {
     id: r.id, date: r.date, course_name: r.courseName,
@@ -807,7 +867,7 @@ export async function apiRequest(method: string, url: string, data?: unknown): P
       const patch: Partial<Round> =
         seg[3] === "status" ? { status: body.status } :
         seg[3] === "game"   ? { gameType: body.gameType, gameOptions: body.gameOptions } :
-        seg[3] === "date"   ? { date: body.date } :
+        seg[3] === "date"   ? { date: toISODate(body.date) } :
         seg[3] === "holeHandicaps" ? { holeHandicaps: body.holeHandicaps } : {};
       return reply(await patchRound(id, patch));
     }
@@ -865,6 +925,11 @@ export async function apiRequest(method: string, url: string, data?: unknown): P
  * when opened.
  */
 /** Remote rounds are pulled in the background and merged on the next read. */
+// Resolve the signed-in identity as soon as the app starts
+if (typeof window !== "undefined" && getSession()) {
+  setTimeout(() => { void refreshIdentity(); }, 0);
+}
+
 let remoteRoundsCache: Round[] | null = null;
 let remoteRoundsAt = 0;
 let remoteRoundsInFlight = false;
@@ -878,7 +943,7 @@ function refreshRemoteRounds(): void {
         id: String(r.id), courseId: r.course_name,
         courseName: String(r.course_name || ""),
         courseRating: null, slopeRating: null, par: null,
-        date: String(r.date || ""), holes: Number(r.holes) || 18,
+        date: toISODate(r.date), holes: Number(r.holes) || 18,
         gameType: String(r.game_type || ""),
         gameOptions: String(r.game_options || "{}"),
         status: String(r.status || "complete"),
@@ -958,7 +1023,7 @@ function fromPublicRound(id: string, pub: any) {
     courseRating: p1 ? Number(p1.course_rating) : null,
     slopeRating: p1 ? Number(p1.slope_rating) : null,
     par: p1 ? Number(p1.par) : null,
-    date: String(r.date || ""), holes: Number(r.holes) || 18,
+    date: toISODate(r.date), holes: Number(r.holes) || 18,
     gameType: String(r.game_type || ""),
     gameOptions: String(r.game_options || "{}"),
     status: String(r.status || "complete"),
@@ -1008,7 +1073,7 @@ async function load(id: string): Promise<Stored | null> {
       courseRating: p1 ? Number(p1.course_rating) : null,
       slopeRating: p1 ? Number(p1.slope_rating) : null,
       par: p1 ? Number(p1.par) : null,
-      date: String(r.round.date), holes: Number(r.round.holes),
+      date: toISODate(r.round.date), holes: Number(r.round.holes),
       gameType: String(r.round.game_type), gameOptions: String(r.round.game_options || "{}"),
       status: String(r.round.status || "active"),
       ownerEmail: r.round.owner_email ? String(r.round.owner_email) : null,
@@ -1058,7 +1123,7 @@ async function createRound(payload: any): Promise<{ round: Round; players: Round
     courseName: String(src.courseName ?? ""),
     courseRating: src.courseRating ?? course?.courseRating ?? null,
     slopeRating: src.slopeRating ?? course?.slopeRating ?? null,
-    date: String(src.date ?? new Date().toISOString().slice(0, 10)),
+    date: toISODate(src.date ?? new Date().toISOString().slice(0, 10)),
     holes: Number(src.holes) || 18,
     par: src.par ?? course?.par ?? null,
     gameType: String(src.gameType ?? "best_ball"),
