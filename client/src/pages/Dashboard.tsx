@@ -552,7 +552,9 @@ function DashboardInner() {
           : <InsightPanel rounds={stats} />}
 
         {/* 7 · The official record, folded away — it is a reconciliation tool,
-            not something to read every visit */}
+            not something to read every visit. Admin only: it is Justin's NGAP
+            account, so it is his data, not the viewer's. */}
+        {admin && (
         <section>
           <button
             onClick={() => setShowNgap(v => !v)}
@@ -563,6 +565,7 @@ function DashboardInner() {
           </button>
           {showNgap && <div className="mt-4"><PerformancePanel /></div>}
         </section>
+        )}
 
         {/* Admin — renders nothing for a member account */}
         <AdminPanel />
