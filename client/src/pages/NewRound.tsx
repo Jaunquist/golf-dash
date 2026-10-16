@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Flag, Users, Trophy, ChevronRight, ChevronLeft, Shield, User, Plus, BookOpen, Info, Ghost, Loader2} from "lucide-react";
+import { ArrowLeft, Flag, Users, Trophy, ChevronRight, ChevronLeft, Shield, User, Plus, BookOpen, Info, Ghost, Loader2, Search, ChevronDown, Check } from "lucide-react";
 import type { GameType, ScoringMode } from "@/lib/gameEngine";
 import type { Course } from "@shared/schema";
 
@@ -209,6 +209,7 @@ export default function NewRound() {
   // Course details used for the round (either from a saved course or newly created)
   const [courseName, setCourseName] = useState("");
   const [courseFilter, setCourseFilter] = useState("");
+  const [courseOpen, setCourseOpen] = useState(false);
 
   /**
    * The picker list, narrowed by the search box.
@@ -627,50 +628,86 @@ export default function NewRound() {
               <span className="font-semibold">Course Setup</span>
             </div>
 
-            {/* Course dropdown */}
+            {/* One control, not two: typing filters, tapping picks.
+                A search box above a dropdown made you interact twice to do
+                one thing, and on a phone that is two taps and a scroll. */}
             <div className="space-y-2">
               <Label>Select Course</Label>
-              {savedCourses.length > 6 && (
+
+              <div className="relative">
+                <Search size={14}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground/60 pointer-events-none" />
                 <Input
-                  value={courseFilter}
-                  onChange={e => setCourseFilter(e.target.value)}
-                  placeholder="Search by course or country…"
-                  className="h-9 text-sm"
-                  data-testid="input-course-filter"
-                />
-              )}
-              <Select value={courseSelectValue} onValueChange={handleCourseSelect}
-                      disabled={coursesLoading}>
-                <SelectTrigger data-testid="select-course" className="w-full">
-                  <SelectValue placeholder={
+                  value={courseOpen ? courseFilter : (selectedCourse?.name ?? "")}
+                  onChange={e => { setCourseFilter(e.target.value); setCourseOpen(true); }}
+                  onFocus={() => { setCourseFilter(""); setCourseOpen(true); }}
+                  disabled={coursesLoading}
+                  placeholder={
                     coursesLoading ? "Loading your courses…"
                     : coursesFailed ? "Couldn't load courses"
-                    : "Choose a course or add new…"
-                  } />
-                </SelectTrigger>
-                <SelectContent>
-                  {visibleCourses.map(c => (
-                    <SelectItem key={c.id} value={String(c.id)}>
-                      <div className="flex items-center gap-2">
-                        <CountryFlag code={(c as any).country} size={14} />
-                        <span>{c.name}</span>
-                        <span className="text-xs text-muted-foreground ml-1">({c.holes}H · CR {c.courseRating} · S {c.slopeRating})</span>
-                      </div>
-                    </SelectItem>
-                  ))}
-                  {visibleCourses.length === 0 && courseFilter && (
-                    <div className="px-2 py-3 text-xs text-muted-foreground text-center">
-                      Nothing matches “{courseFilter}”.
+                    : "Search or choose a course…"
+                  }
+                  className="h-11 pl-9 pr-9 text-sm"
+                  data-testid="select-course"
+                />
+                {/* Chevron doubles as the open/close affordance */}
+                <button
+                  type="button"
+                  onClick={() => setCourseOpen(o => !o)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground"
+                  tabIndex={-1}
+                  aria-label={courseOpen ? "Close course list" : "Open course list"}
+                >
+                  <ChevronDown size={16}
+                    className={`transition-transform ${courseOpen ? "rotate-180" : ""}`} />
+                </button>
+
+                {courseOpen && !coursesLoading && (
+                  <>
+                    {/* Tapping anywhere else closes the list */}
+                    <div className="fixed inset-0 z-30" onClick={() => setCourseOpen(false)} />
+                    <div className="absolute z-40 left-0 right-0 top-full mt-1 max-h-72 overflow-y-auto
+                                    rounded-xl border border-border bg-popover shadow-lg py-1">
+                      {visibleCourses.map(c => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => { handleCourseSelect(String(c.id)); setCourseOpen(false); setCourseFilter(""); }}
+                          className={`w-full text-left px-3 py-2.5 flex items-center gap-2.5 active:bg-muted
+                                      ${courseSelectValue === String(c.id) ? "bg-primary/8" : ""}`}
+                        >
+                          <CountryFlag code={(c as any).country} size={15} />
+                          <span className="flex-1 min-w-0">
+                            <span className="block text-sm font-medium truncate">{c.name}</span>
+                            <span className="block text-[10px] text-muted-foreground">
+                              {c.holes}H · CR {c.courseRating} · Slope {c.slopeRating}
+                            </span>
+                          </span>
+                          {courseSelectValue === String(c.id) && (
+                            <Check size={15} className="text-primary shrink-0" />
+                          )}
+                        </button>
+                      ))}
+
+                      {visibleCourses.length === 0 && (
+                        <p className="px-3 py-4 text-xs text-muted-foreground text-center">
+                          {courseFilter ? `Nothing matches “${courseFilter}”.` : "No courses yet."}
+                        </p>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => { handleCourseSelect("__new__"); setCourseOpen(false); setCourseFilter(""); }}
+                        className="w-full text-left px-3 py-2.5 flex items-center gap-2 text-primary
+                                   font-medium text-sm border-t border-border active:bg-muted"
+                      >
+                        <Plus size={14} />
+                        {courseFilter.trim() ? `Add “${courseFilter.trim()}”…` : "Add new course…"}
+                      </button>
                     </div>
-                  )}
-                  <SelectItem value="__new__">
-                    <div className="flex items-center gap-2 text-primary font-medium">
-                      <Plus size={13} />
-                      <span>Add new course…</span>
-                    </div>
-                  </SelectItem>
-                </SelectContent>
-              </Select>
+                  </>
+                )}
+              </div>
 
               {coursesLoading && (
                 <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
