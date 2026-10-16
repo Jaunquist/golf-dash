@@ -18,7 +18,7 @@ export default defineConfig({
         name: "Golf Dash",
         short_name: "Golf Dash",
         description: "Track golf rounds, scores, handicap and game results",
-        version: "1.6.0",
+        version: "1.7.0",
         theme_color: "#1d5c3a",
         background_color: "#f5f2ea",
         display: "standalone",
@@ -55,15 +55,31 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Force new SW to take over immediately without waiting for tab close
+        // Take over from the previous worker immediately rather than waiting
+        // for every tab to close. Declared once — these were previously set
+        // twice in this same object, which is what the build warned about.
         skipWaiting: true,
         clientsClaim: true,
+        // Without this, precaches from superseded deploys are kept forever
+        cleanupOutdatedCaches: true,
+
         // Precache all built assets (JS, CSS, HTML)
         globPatterns: ["**/*.{js,css,html,svg,png,ico,woff2}"],
 
-        // Runtime caching strategies
+        /**
+         * Runtime caching is only for things that genuinely cross the network.
+         *
+         * The /api/* rules that used to live here never matched anything: this
+         * app has no HTTP API. queryClient intercepts every /api/* call and
+         * answers it from IndexedDB, syncing to Apps Script as a POST to
+         * script.google.com — a URL the service worker never sees, and a method
+         * workbox does not cache in any case. One of those rules was also keyed
+         * to a numeric round id, which could never match a UUID even in
+         * principle.
+         *
+         * Fonts are the real network dependency, so fonts are what is cached.
+         */
         runtimeCaching: [
-          // ── Google Fonts: cache-first (rarely changes) ──────────────────
           {
             urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
             handler: "CacheFirst",
@@ -91,57 +107,7 @@ export default defineConfig({
               cacheableResponse: { statuses: [0, 200] },
             },
           },
-
-          // ── /api/courses — stale-while-revalidate (fast + stays fresh) ──
-          {
-            urlPattern: /\/api\/courses(\?.*)?$/,
-            handler: "StaleWhileRevalidate",
-            options: {
-              cacheName: "api-courses",
-              expiration: { maxEntries: 1, maxAgeSeconds: 60 * 60 * 24 * 30 },
-              cacheableResponse: { statuses: [200] },
-            },
-          },
-
-          // ── /api/settings — stale-while-revalidate ──────────────────────
-          {
-            urlPattern: /\/api\/settings\/.*/,
-            handler: "StaleWhileRevalidate",
-            options: {
-              cacheName: "api-settings",
-              expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 30 },
-              cacheableResponse: { statuses: [200] },
-            },
-          },
-
-          // ── /api/rounds (list) — network-first, fall back to cache ──────
-          {
-            urlPattern: /\/api\/rounds(\?.*)?$/,
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "api-rounds",
-              networkTimeoutSeconds: 5,
-              expiration: { maxEntries: 50, maxAgeSeconds: 60 * 60 * 24 * 7 },
-              cacheableResponse: { statuses: [200] },
-            },
-          },
-
-          // ── Individual round data — network-first ────────────────────────
-          {
-            urlPattern: /\/api\/rounds\/\d+.*/,
-            handler: "NetworkFirst",
-            options: {
-              cacheName: "api-round-detail",
-              networkTimeoutSeconds: 5,
-              expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 7 },
-              cacheableResponse: { statuses: [200] },
-            },
-          },
         ],
-
-        // Skip waiting — update SW immediately on new deploy
-        skipWaiting: true,
-        clientsClaim: true,
       },
     }),
   ],
