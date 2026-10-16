@@ -18,7 +18,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, CheckCircle2, Users, Trash2, UserPlus, Download, Ghost, Pencil, Link2, Share2, StickyNote } from "lucide-react";
 import { ReadOnlyBar } from "@/components/AuthGate";
-import { canEdit, onAuthChange } from "@/lib/queryClient";
+import { canEditRound, onAuthChange } from "@/lib/queryClient";
 import {
   computeGameResults, cumulativeTotals, scoreCssClass, handicapStrokesOnHole,
   type Player as GPlayer
@@ -362,9 +362,12 @@ export default function Scorecard() {
    * reload. onAuthChange fires immediately with the current session and again
    * on every change, so this starts correct and stays correct.
    */
-  const [editable, setEditable] = useState(canEdit);
-  useEffect(() => onAuthChange(() => setEditable(canEdit())), []);
-  const readOnly = !editable;
+  const [authTick, setAuthTick] = useState(0);
+  useEffect(() => onAuthChange(() => setAuthTick(t => t + 1)), []);
+  // Edit rights now depend on the round, not just on being signed in: a round
+  // belongs to whoever started it, and the backend refuses anyone else.
+  const readOnly = !canEditRound(data?.round as any);
+  void authTick;   // re-evaluated on every sign-in change
 
   const openSheet = useCallback((playerId: string, hole: number) => {
     // Say why rather than swallowing the tap — a dead cell reads as a broken app
@@ -1602,7 +1605,7 @@ export default function Scorecard() {
         </div>
       )}
 
-      <ReadOnlyBar />
+      <ReadOnlyBar ownerEmail={(round as any)?.ownerEmail} />
 
       <main className="max-w-5xl mx-auto px-3 py-4 space-y-4
                        landscape:px-2 landscape:py-2 landscape:space-y-2 landscape:max-w-none"
