@@ -1,29 +1,37 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
 import { apiRequest, queryClient as qc } from "@/lib/queryClient";
 import { saveRoundsList, saveJustinRounds, removeRoundFromCache } from "@/lib/roundsCache";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel,
   AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
   AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Flag, TrendingDown, Target, Activity, Trophy, User, Trash2, Pencil, Check, X, RefreshCw } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  BarChart, Bar, Cell, ReferenceLine
-} from "recharts";
-import type { Round, RoundPlayer, HoleScore } from "@shared/schema";
-import { handicapStrokesOnHole } from "@/lib/gameEngine";
+  Plus, Flag, Trophy, Trash2, Pencil, Check, X, RefreshCw, ChevronDown,
+} from "lucide-react";
+import type { Round } from "@shared/schema";
+import { statsForRounds, type RoundDetail, type RoundStats } from "@/lib/roundStats";
+import TrendChart from "@/components/TrendChart";
+import InsightPanel from "@/components/InsightPanel";
 import PerformancePanel from "@/components/PerformancePanel";
 import AuthGate, { SignInButton } from "@/components/AuthGate";
+
+/**
+ * One scrolling page, ordered by how often you need each thing.
+ *
+ * This replaces an Overview / My Stats tab split that put the same rounds in
+ * two places and duplicated the stat tiles in both. The ordering below is the
+ * sequence the questions actually arrive in: where is my index, how did the
+ * last round go, which way am I trending, where are the strokes going, and
+ * only then the full history.
+ */
 
 const GAME_LABELS: Record<string, string> = {
   best_ball: "Best Ball",
@@ -35,82 +43,43 @@ const GAME_LABELS: Record<string, string> = {
   match_play: "Match Play",
 };
 
-interface RoundDetail {
-  round: Round;
-  players: RoundPlayer[];
-  scores: HoleScore[];
-}
-
-// Approximate WHS handicap differential for a round
-function calcHandicapDifferential(grossScore: number, totalPar: number, courseHandicap: number): number {
-  const adjusted = grossScore - courseHandicap * 0.85;
-  return Math.round((adjusted - totalPar) * 10) / 10;
-}
-
-/** Returns a short label like "9H · Front" or "9H · Back" or "18H" */
+/** "9H · Front" / "9H · Back" / "18H" */
 function roundHoleLabel(round: Round): string {
   if (round.holes === 18) return "18H";
   try {
-    const opts = JSON.parse(round.gameOptions || "{}");
-    const nt = opts?.nineType;
+    const nt = JSON.parse(round.gameOptions || "{}")?.nineType;
     if (nt === "back") return "9H · Back";
     if (nt === "front") return "9H · Front";
-  } catch {}
+  } catch { /* malformed options — fall through to the plain label */ }
   return "9H";
 }
 
-function getRoundScoreSummary(detail: RoundDetail) {
-  const pars: number[] = JSON.parse(detail.round.pars);
-  const totalPar = pars.reduce((s, p) => s + p, 0);
-  const justinPlayer = detail.players.find(p => p.position === 1);
-  if (!justinPlayer) return null;
-  const justinScores = detail.scores.filter(s => s.playerId === justinPlayer.id);
-  const totalStrokes = justinScores.reduce((s, sc) => s + (sc.strokes ?? 0), 0);
-  const totalPutts = justinScores.reduce((s, sc) => s + (sc.putts ?? 0), 0);
-  const holesPlayed = justinScores.filter(s => s.strokes != null).length;
-  const scoreDiff = totalStrokes - totalPar;
-  return { totalStrokes, totalPutts, holesPlayed, scoreDiff, totalPar, justinPlayer };
+function signed(n: number): string {
+  return n > 0 ? `+${n}` : n === 0 ? "E" : String(n);
 }
 
-// Compute net score for Justin over all holes
-function getJustinNetScore(detail: RoundDetail): number | null {
-  const pars: number[] = JSON.parse(detail.round.pars);
-  const holeHcps: number[] = JSON.parse(detail.round.holeHandicaps);
-  const holes = detail.round.holes;
-  const justinPlayer = detail.players.find(p => p.position === 1);
-  if (!justinPlayer) return null;
-  const justinScores = detail.scores.filter(s => s.playerId === justinPlayer.id && s.strokes != null);
-  if (justinScores.length === 0) return null;
-  let net = 0;
-  for (const sc of justinScores) {
-    const gross = sc.strokes!;
-    const holeHcpRank = holeHcps[sc.hole - 1] ?? sc.hole;
-    const strokes = handicapStrokesOnHole(justinPlayer.courseHandicap, holeHcpRank, holes);
-    net += gross - strokes;
-  }
-  return net;
+function monthLabel(date: string): string {
+  const d = new Date(date + "T00:00:00");
+  if (isNaN(d.getTime())) return date.slice(0, 7);
+  return d.toLocaleDateString("en-PH", { month: "long", year: "numeric" });
 }
 
+// ── Swipeable round card ───────────────────────────────────────────────────
 
-// ── Swipeable Round Card ──────────────────────────────────────────────────────
 const SWIPE_THRESHOLD = 60;
-const ACTION_WIDTH = 128; // px revealed when fully swiped
+const ACTION_WIDTH = 128;
 
-interface SwipeableRoundCardProps {
+function SwipeableRoundCard({ round, stats, onDelete, navigate }: {
   round: Round;
-  summary: ReturnType<typeof getRoundScoreSummary>;
-  onDelete: (id: number) => void;
+  stats: RoundStats | null;
+  onDelete: (id: string) => void;
   navigate: (path: string) => void;
-}
-
-function SwipeableRoundCard({ round, summary, onDelete, navigate }: SwipeableRoundCardProps) {
+}) {
   const [offset, setOffset] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const startXRef = useRef(0);
   const currentOffsetRef = useRef(0);
   const cardRef = useRef<HTMLDivElement>(null);
-
-  const diff = summary ? summary.scoreDiff : null;
 
   const snapTo = useCallback((target: number) => {
     setOffset(target);
@@ -118,7 +87,6 @@ function SwipeableRoundCard({ round, summary, onDelete, navigate }: SwipeableRou
   }, []);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
-    // Don't hijack clicks on buttons
     if ((e.target as HTMLElement).closest("button")) return;
     startXRef.current = e.clientX;
     setIsDragging(true);
@@ -127,66 +95,42 @@ function SwipeableRoundCard({ round, summary, onDelete, navigate }: SwipeableRou
 
   const onPointerMove = useCallback((e: React.PointerEvent) => {
     if (!isDragging) return;
-    const delta = e.clientX - startXRef.current;
-    const raw = currentOffsetRef.current + delta;
-    // Only allow swiping left (negative) up to ACTION_WIDTH
-    const clamped = Math.max(-ACTION_WIDTH, Math.min(0, raw));
-    setOffset(clamped);
+    const raw = currentOffsetRef.current + (e.clientX - startXRef.current);
+    setOffset(Math.max(-ACTION_WIDTH, Math.min(0, raw)));
   }, [isDragging]);
 
   const onPointerUp = useCallback((e: React.PointerEvent) => {
     if (!isDragging) return;
     setIsDragging(false);
-    const delta = e.clientX - startXRef.current;
-    const totalMove = currentOffsetRef.current + delta;
-
-    if (totalMove < -SWIPE_THRESHOLD) {
-      // Snap open
-      snapTo(-ACTION_WIDTH);
-    } else {
-      // Snap closed
-      snapTo(0);
-    }
+    const totalMove = currentOffsetRef.current + (e.clientX - startXRef.current);
+    snapTo(totalMove < -SWIPE_THRESHOLD ? -ACTION_WIDTH : 0);
   }, [isDragging, snapTo]);
 
   const handleCardClick = useCallback(() => {
-    // If actions are revealed, a tap anywhere on card closes them
-    if (offset < -10) {
-      snapTo(0);
-      return;
-    }
+    if (offset < -10) { snapTo(0); return; }
     navigate(`/round/${round.id}`);
   }, [offset, round.id, navigate, snapTo]);
 
   return (
     <div className="relative overflow-hidden rounded-xl" data-testid={`swipeable-round-${round.id}`}>
-      {/* Action buttons revealed behind the card */}
-      <div
-        className="absolute inset-y-0 right-0 flex items-stretch"
-        style={{ width: ACTION_WIDTH }}
-        aria-hidden={offset === 0}
-      >
-        {/* Edit — navigate to scorecard */}
+      <div className="absolute inset-y-0 right-0 flex items-stretch"
+           style={{ width: ACTION_WIDTH }} aria-hidden={offset === 0}>
         <button
           className="flex-1 flex flex-col items-center justify-center gap-1 bg-blue-500 hover:bg-blue-600 text-white text-[11px] font-semibold transition-colors"
           data-testid={`btn-edit-round-${round.id}`}
           onClick={() => { snapTo(0); navigate(`/round/${round.id}`); }}
         >
-          <Pencil size={15} />
-          Edit
+          <Pencil size={15} /> Edit
         </button>
-        {/* Delete */}
         <button
           className="flex-1 flex flex-col items-center justify-center gap-1 bg-red-500 hover:bg-red-600 text-white text-[11px] font-semibold transition-colors rounded-r-xl"
           data-testid={`btn-delete-round-${round.id}`}
-          onClick={() => { snapTo(0); onDelete(round.id); }}
+          onClick={() => { snapTo(0); onDelete(String(round.id)); }}
         >
-          <Trash2 size={15} />
-          Delete
+          <Trash2 size={15} /> Delete
         </button>
       </div>
 
-      {/* Card surface — slides left to reveal actions */}
       <div
         ref={cardRef}
         className={`relative z-10 flex items-center gap-3 p-3.5 border border-border bg-card cursor-pointer rounded-xl select-none
@@ -206,25 +150,32 @@ function SwipeableRoundCard({ round, summary, onDelete, navigate }: SwipeableRou
         </div>
         <div className="flex-1 min-w-0">
           <div className="font-semibold text-sm truncate">{round.courseName}</div>
-          <div className="text-xs text-muted-foreground">{round.date} · {roundHoleLabel(round)} · {GAME_LABELS[round.gameType]}</div>
+          <div className="text-xs text-muted-foreground truncate">
+            {round.date} · {roundHoleLabel(round)} · {GAME_LABELS[round.gameType] ?? round.gameType}
+          </div>
         </div>
         <div className="text-right flex-shrink-0">
-          {summary && (
+          {stats && (
             <>
-              <div className="font-bold tabular text-sm">{summary.totalStrokes}</div>
-              <div className={`text-xs tabular ${diff! > 0 ? "text-orange-500" : diff! < 0 ? "text-green-600" : "text-muted-foreground"}`}>
-                {diff! > 0 ? `+${diff}` : diff === 0 ? "E" : diff} vs par
+              <div className="font-bold tabular text-sm">{stats.gross}</div>
+              <div className={`text-xs tabular ${
+                stats.vsPar > 0 ? "text-orange-500 dark:text-orange-400"
+                : stats.vsPar < 0 ? "text-green-600 dark:text-green-400"
+                : "text-muted-foreground"}`}>
+                {signed(stats.vsPar)} vs par
               </div>
             </>
           )}
           {round.status === "active" && <Badge variant="outline" className="text-[10px]">Active</Badge>}
-          {round.status === "complete" && !summary && <Badge className="text-[10px] bg-muted text-muted-foreground">Done</Badge>}
+          {round.status === "complete" && !stats && (
+            <Badge className="text-[10px] bg-muted text-muted-foreground">Done</Badge>
+          )}
         </div>
-        {/* Swipe hint chevron — only when closed */}
         {offset === 0 && (
           <div className="ml-1 text-muted-foreground/30 flex-shrink-0">
             <svg width="10" height="16" viewBox="0 0 10 16" fill="none">
-              <path d="M7 2L2 8l5 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M7 2L2 8l5 6" stroke="currentColor" strokeWidth="1.5"
+                    strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </div>
         )}
@@ -232,12 +183,52 @@ function SwipeableRoundCard({ round, summary, onDelete, navigate }: SwipeableRou
     </div>
   );
 }
-// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Last round ─────────────────────────────────────────────────────────────
+
+/** The round you just played, which was previously buried under the chart. */
+function LastRoundCard({ stats, navigate }: {
+  stats: RoundStats; navigate: (p: string) => void;
+}) {
+  const cells: [string, string][] = [
+    ["Gross", String(stats.gross)],
+    ["vs par", signed(stats.vsPar)],
+    ["Putts", stats.putts != null ? String(stats.putts) : "—"],
+    ["GIR", stats.girPct != null ? `${stats.girPct}%` : "—"],
+    ["Diff", stats.differential != null ? stats.differential.toFixed(1) : "—"],
+  ];
+
+  return (
+    <button
+      onClick={() => navigate(`/round/${stats.id}`)}
+      className="w-full text-left rounded-xl border border-border bg-card px-4 py-3.5 hover:border-primary/40 transition-colors"
+    >
+      <div className="flex items-baseline gap-2 mb-2.5">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+          Last round
+        </span>
+        <span className="text-[10px] text-muted-foreground/70 ml-auto tabular">
+          {stats.date} · {stats.holes}H{stats.tee ? ` · ${stats.tee}` : ""}
+        </span>
+      </div>
+      <div className="font-semibold text-sm truncate mb-2.5">{stats.course}</div>
+      <div className="grid grid-cols-5 gap-1">
+        {cells.map(([label, value]) => (
+          <div key={label}>
+            <div className="text-[9px] text-muted-foreground leading-tight">{label}</div>
+            <div className="font-display font-bold text-base tabular leading-tight">{value}</div>
+          </div>
+        ))}
+      </div>
+    </button>
+  );
+}
+
+// ── Dashboard ──────────────────────────────────────────────────────────────
 
 function DashboardInner() {
   const [, navigate] = useLocation();
-  const [activeTab, setActiveTab] = useState("overview");
-  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const { toast } = useToast();
   const queryClientHook = useQueryClient();
 
@@ -247,58 +238,58 @@ function DashboardInner() {
     queryFn: async () => {
       const r = await apiRequest("GET", "/api/rounds");
       const data = await r.json();
-      saveRoundsList(data); // persist for instant load next time
+      saveRoundsList(data);
       return data;
     },
   });
 
-  // Single batched fetch: only Justin (position=1) per round — avoids loading 288-player CSV imports
-  const allRounds = roundList ?? [];
+  // One batched fetch: position-1 player only, so a large imported round does
+  // not drag the dashboard down.
   const justinRounds = useQuery<RoundDetail[]>({
     queryKey: ["/api/rounds/justin"],
     staleTime: 0,
     queryFn: async () => {
       const resp = await apiRequest("GET", "/api/rounds/justin");
       const data = await resp.json() as RoundDetail[];
-      saveJustinRounds(data); // persist for instant load next time
+      saveJustinRounds(data);
       return data;
     },
   });
 
+  const allRounds = roundList ?? [];
   const details = justinRounds.data ?? [];
-  const summaries = details
-    .map(d => ({ ...d, summary: getRoundScoreSummary(d) }))
-    .filter(d => d.summary !== null)
-    .sort((a, b) => a.round.date.localeCompare(b.round.date));
 
-  // Local round-derived data for putts/score charts (kept for local stats)
-  const handicapData = summaries.map((d, i) => {
-    const s = d.summary!;
-    const diff = calcHandicapDifferential(s.totalStrokes, s.totalPar, s.justinPlayer.courseHandicap);
-    const netScore = getJustinNetScore(d);
-    return {
-      date: d.round.date.slice(5),
-      course: d.round.courseName,
-      handicap: Math.max(0, Math.round((s.justinPlayer.courseHandicap) * 10) / 10),
-      diff: Math.round(diff * 10) / 10,
-      grossScore: s.totalStrokes,
-      par: s.totalPar,
-      scoreDiff: s.scoreDiff,
-      putts: s.totalPutts,
-      puttsPerHole: s.holesPlayed > 0 ? Math.round((s.totalPutts / s.holesPlayed) * 100) / 100 : 0,
-      netScore,
-      // net score relative to course par — comparable across 9H and 18H rounds
-      netVsPar: netScore != null ? netScore - s.totalPar : null,
-    };
-  });
+  // Every derived figure on this page comes from here
+  const stats = useMemo(() => statsForRounds(details), [details]);
+  const statsById = useMemo(() => {
+    const m = new Map<string, RoundStats>();
+    stats.forEach(s => m.set(s.id, s));
+    return m;
+  }, [stats]);
 
-  // ── Live HI from settings ────────────────────────────────────────────────
-  const { data: hiSetting, refetch: refetchHI } = useQuery<{ key: string; value: string }>({
+  const lastRound = stats.length ? stats[stats.length - 1] : null;
+  const activeRounds = allRounds.filter(r => r.status === "active");
+
+  // Round history, newest first, grouped by month
+  const historyGroups = useMemo(() => {
+    const groups: { label: string; rounds: Round[] }[] = [];
+    [...allRounds]
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .forEach(r => {
+        const label = monthLabel(r.date);
+        const last = groups[groups.length - 1];
+        if (last && last.label === label) last.rounds.push(r);
+        else groups.push({ label, rounds: [r] });
+      });
+    return groups;
+  }, [allRounds]);
+
+  // ── Handicap index ───────────────────────────────────────────────────────
+  const { data: hiSetting } = useQuery<{ key: string; value: string }>({
     queryKey: ["/api/settings/handicap_index"],
   });
-  const latestHcp = hiSetting ? parseFloat(hiSetting.value) : 25.6;
+  const latestHcp = hiSetting?.value ? parseFloat(hiSetting.value) : null;
 
-  // ── Last NGAP sync timestamp ─────────────────────────────────────────────
   const { data: lastSyncSetting } = useQuery<{ key: string; value: string }>({
     queryKey: ["/api/settings/ngap_last_sync"],
   });
@@ -307,7 +298,7 @@ function DashboardInner() {
     const d = new Date(lastSyncSetting.value);
     if (isNaN(d.getTime())) return null;
     return d.toLocaleString("en-PH", {
-      month: "short", day: "numeric", year: "numeric",
+      month: "short", day: "numeric",
       hour: "numeric", minute: "2-digit", hour12: true,
       timeZone: "Asia/Manila",
     });
@@ -316,18 +307,18 @@ function DashboardInner() {
   const hiMutation = useMutation({
     mutationFn: (value: string) =>
       apiRequest("PATCH", "/api/settings/handicap_index", { value }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/settings/handicap_index"] }); },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["/api/settings/handicap_index"] }),
   });
 
   const [editingHI, setEditingHI] = useState(false);
   const [hiDraft, setHiDraft] = useState("");
   const [ngapSyncConfirm, setNgapSyncConfirm] = useState(false);
   const [ngapPolling, setNgapPolling] = useState(false);
+  const [showNgap, setShowNgap] = useState(false);
 
-  // Poll /api/ngap/sync/status after triggering sync
   const pollNgapStatus = () => {
     let attempts = 0;
-    const MAX = 40; // 40 x 3s = 2 min max
+    const MAX = 40;                                   // 40 × 3s = 2 min
     const interval = setInterval(async () => {
       attempts++;
       try {
@@ -338,7 +329,8 @@ function DashboardInner() {
           setNgapPolling(false);
           qc.invalidateQueries({ queryKey: ["/api/settings/handicap_index"] });
           qc.invalidateQueries({ queryKey: ["/api/settings/ngap_last_sync"] });
-          toast({ title: "WHS Index synced ✓", description: `Handicap Index updated to ${data.handicapIndex}`, duration: 5000 });
+          qc.invalidateQueries({ queryKey: ["/api/trends"] });
+          toast({ title: "WHS index synced", description: `Now ${data.handicapIndex}`, duration: 5000 });
         } else if (data.status === "error") {
           clearInterval(interval);
           setNgapPolling(false);
@@ -355,444 +347,290 @@ function DashboardInner() {
   };
 
   const ngapSyncMutation = useMutation({
-    mutationFn: async () => {
-      const r = await apiRequest("POST", "/api/ngap/sync", {});
-      return r.json();
-    },
+    mutationFn: async () => (await apiRequest("POST", "/api/ngap/sync", {})).json(),
     onSuccess: () => {
       setNgapPolling(true);
-      toast({ title: "Syncing from NGAP WHS…", description: "This takes ~30s. Hang tight.", duration: 4000 });
+      toast({ title: "Syncing from NGAP WHS…", description: "Takes about 30 seconds.", duration: 4000 });
       pollNgapStatus();
     },
-    onError: (e: any) => toast({ title: "NGAP sync failed", description: e.message, variant: "destructive" }),
+    onError: (e: any) =>
+      toast({ title: "NGAP sync failed", description: e.message, variant: "destructive" }),
   });
-  const avgPuttsPerHole = handicapData.length
-    ? Math.round(handicapData.reduce((s, d) => s + d.puttsPerHole, 0) / handicapData.length * 100) / 100
-    : 0;
-  const avgScoreDiff = handicapData.length
-    ? Math.round(handicapData.reduce((s, d) => s + d.scoreDiff, 0) / handicapData.length * 10) / 10
-    : 0;
-
-  const activeRounds = roundList?.filter(r => r.status === "active") ?? [];
-
-  // Justin's personal stats rows (for My Stats tab) — all rounds not just completed
-  // Reuse the same justinRounds query — no second waterfall fetch needed
-  const allRoundDetails = justinRounds;
 
   const deleteMutation = useMutation({
-    mutationFn: async (id: number) => {
-      // Hit server FIRST — only update cache/localStorage after confirmed
-      const r = await apiRequest("DELETE", `/api/rounds/${id}`);
-      return r.json();
-    },
+    mutationFn: async (id: string) => (await apiRequest("DELETE", `/api/rounds/${id}`)).json(),
     onSuccess: (_data, id) => {
-      // Server confirmed deletion — now remove from localStorage and cache
-      removeRoundFromCache(id);
-      queryClientHook.setQueryData<Round[]>(
-        ["/api/rounds"],
-        (old) => (old ?? []).filter(r => r.id !== id)
-      );
-      queryClientHook.setQueryData<RoundDetail[]>(
-        ["/api/rounds/justin"],
-        (old) => (old ?? []).filter(d => d.round.id !== id)
-      );
+      // Cache is only touched once the server has confirmed
+      removeRoundFromCache(id as any);
+      queryClientHook.setQueryData<Round[]>(["/api/rounds"],
+        old => (old ?? []).filter(r => String(r.id) !== id));
+      queryClientHook.setQueryData<RoundDetail[]>(["/api/rounds/justin"],
+        old => (old ?? []).filter(d => String(d.round.id) !== id));
       toast({ title: "Round deleted" });
     },
     onError: () => {
-      // Server failed — don't touch cache or localStorage, refetch to sync
       queryClientHook.invalidateQueries({ queryKey: ["/api/rounds"] });
       queryClientHook.invalidateQueries({ queryKey: ["/api/rounds/justin"] });
       toast({ title: "Failed to delete round", variant: "destructive" });
     },
   });
 
-  const myStatsRows = (allRoundDetails.data ?? [])
-    .map(d => {
-      const summary = getRoundScoreSummary(d);
-      if (!summary) return null;
-      const net = getJustinNetScore(d);
-      const netVsPar = net != null ? net - summary.totalPar : null;
-      return {
-        id: d.round.id,
-        date: d.round.date,
-        location: d.round.courseName,
-        gross: summary.totalStrokes,
-        courseHcp: summary.justinPlayer.courseHandicap,
-        net,
-        netVsPar,
-        totalPar: summary.totalPar,
-        totalPutts: summary.totalPutts,
-        status: d.round.status,
-      };
-    })
-    // A type-guard filter tells TypeScript the nulls are gone, so the shape
-    // inferred from .map() survives. The old cast was both unnecessary and
-    // malformed: `A & B[]` parses as "A and an array of B", which discarded
-    // every property of A and caused ~20 downstream errors.
-    .filter((r): r is NonNullable<typeof r> => r !== null)
-    .sort((a, b) => b.date.localeCompare(a.date));
+  const loadingHistory = isLoading || justinRounds.isLoading;
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
       <header className="sticky top-0 z-20 bg-background/95 backdrop-blur border-b border-border">
         <div className="max-w-5xl mx-auto px-4 h-14 flex items-center gap-2">
-          {/* Logo */}
-          <svg viewBox="0 0 32 32" width="28" height="28" fill="none" aria-label="Fairway logo">
+          <svg viewBox="0 0 32 32" width="28" height="28" fill="none" aria-label="Golf Dash">
             <circle cx="16" cy="16" r="15" stroke="currentColor" strokeWidth="2" className="text-primary" />
-            <path d="M16 8v12M16 8l-5 8M16 8l5 8" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className="text-primary" />
+            <path d="M16 8v12M16 8l-5 8M16 8l5 8" stroke="currentColor" strokeWidth="2.2"
+                  strokeLinecap="round" strokeLinejoin="round" className="text-primary" />
             <circle cx="16" cy="24" r="2" fill="currentColor" className="text-accent" />
           </svg>
           <h1 className="font-display font-bold text-lg flex-1 truncate">Golf Dash</h1>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => navigate("/courses")}
-            className="gap-1.5 text-muted-foreground hover:text-foreground"
-            data-testid="btn-nav-courses"
-          >
+          <Button variant="ghost" size="sm" onClick={() => navigate("/courses")}
+                  className="gap-1.5 text-muted-foreground hover:text-foreground"
+                  data-testid="btn-nav-courses">
             <Flag size={15} /> Courses
           </Button>
-          <Button
-            data-testid="btn-new-round"
-            size="sm"
-            onClick={() => navigate("/new-round")}
-            className="gap-1.5"
-          >
+          <Button data-testid="btn-new-round" size="sm" onClick={() => navigate("/new-round")}
+                  className="gap-1.5">
             <Plus size={15} /> New Round
           </Button>
         </div>
-
-        {/* Sign-in sits on its own row: the Google widget is a fixed width and
-            squeezed the title and action buttons off a phone screen. */}
         <div className="max-w-5xl mx-auto px-4 pb-2 flex justify-end">
           <SignInButton />
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 py-6">
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="mb-6 w-full max-w-xs">
-            <TabsTrigger value="overview" className="flex-1 gap-1.5 text-xs">
-              <Trophy size={13} /> Overview
-            </TabsTrigger>
-            <TabsTrigger value="my-stats" className="flex-1 gap-1.5 text-xs" data-testid="tab-my-stats">
-              <User size={13} /> My Stats
-            </TabsTrigger>
-          </TabsList>
-
-          {/* ── OVERVIEW TAB ── */}
-          <TabsContent value="overview" className="space-y-8">
-            {/* Active Rounds Banner */}
-            {activeRounds.length > 0 && (
-              <div className="space-y-2">
-                <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">In Progress</h2>
-                {activeRounds.map(r => (
-                  <Link key={r.id} href={`/round/${r.id}`}>
-                    <div className="flex items-center gap-3 p-3.5 rounded-xl border-2 border-accent/50 bg-accent/5 cursor-pointer hover:border-accent transition-colors">
-                      <div className="w-9 h-9 rounded-lg bg-accent/20 flex items-center justify-center">
-                        <Flag size={16} className="text-accent" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="font-semibold truncate">{r.courseName}</div>
-                        <div className="text-xs text-muted-foreground">{r.date} · {roundHoleLabel(r)} · {GAME_LABELS[r.gameType]}</div>
-                      </div>
-                      <Badge className="bg-accent text-accent-foreground text-xs">Active →</Badge>
+      <main className="max-w-5xl mx-auto px-4 py-5 space-y-7">
+        {/* In progress */}
+        {activeRounds.length > 0 && (
+          <div className="space-y-2">
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              In progress
+            </h2>
+            {activeRounds.map(r => (
+              <Link key={r.id} href={`/round/${r.id}`}>
+                <div className="flex items-center gap-3 p-3.5 rounded-xl border-2 border-accent/50 bg-accent/5 cursor-pointer hover:border-accent transition-colors">
+                  <div className="w-9 h-9 rounded-lg bg-accent/20 flex items-center justify-center">
+                    <Flag size={16} className="text-accent" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold truncate">{r.courseName}</div>
+                    <div className="text-xs text-muted-foreground truncate">
+                      {r.date} · {roundHoleLabel(r)} · {GAME_LABELS[r.gameType] ?? r.gameType}
                     </div>
-                  </Link>
-                ))}
+                  </div>
+                  <Badge className="bg-accent text-accent-foreground text-xs">Resume →</Badge>
+                </div>
+              </Link>
+            ))}
+          </div>
+        )}
+
+        {/* 1 · Index hero */}
+        <section className="rounded-xl border border-border bg-card px-4 py-3.5">
+          <div className="flex items-start gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+                WHS handicap index
+              </div>
+              {editingHI ? (
+                <div className="flex items-center gap-1 mt-1">
+                  <Input
+                    autoFocus type="number" step="0.1" min="0" max="54"
+                    value={hiDraft}
+                    onChange={e => setHiDraft(e.target.value)}
+                    className="h-8 w-24 text-base font-bold tabular px-2"
+                    data-testid="input-hi-value"
+                    onKeyDown={e => {
+                      if (e.key === "Enter") { hiMutation.mutate(hiDraft); setEditingHI(false); }
+                      if (e.key === "Escape") setEditingHI(false);
+                    }}
+                  />
+                  <button onClick={() => { hiMutation.mutate(hiDraft); setEditingHI(false); }}
+                          className="text-green-600 hover:text-green-700" data-testid="button-hi-confirm">
+                    <Check size={16} />
+                  </button>
+                  <button onClick={() => setEditingHI(false)}
+                          className="text-muted-foreground hover:text-foreground" data-testid="button-hi-cancel">
+                    <X size={16} />
+                  </button>
+                </div>
+              ) : (
+                <div className="font-display font-bold text-3xl tabular leading-none mt-1">
+                  {latestHcp != null ? latestHcp.toFixed(1) : "—"}
+                </div>
+              )}
+              {lastSyncLabel && !editingHI && (
+                <p className="text-[9px] text-muted-foreground/60 mt-1.5">Pulled {lastSyncLabel}</p>
+              )}
+            </div>
+
+            {!editingHI && (
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  onClick={() => setNgapSyncConfirm(true)}
+                  className="text-muted-foreground/60 hover:text-primary transition-colors"
+                  data-testid="button-sync-ngap" title="Sync from NGAP WHS"
+                  disabled={ngapSyncMutation.isPending || ngapPolling}
+                >
+                  <RefreshCw size={14}
+                    className={(ngapSyncMutation.isPending || ngapPolling) ? "animate-spin" : ""} />
+                </button>
+                <button
+                  onClick={() => { setHiDraft(latestHcp != null ? String(latestHcp) : ""); setEditingHI(true); }}
+                  className="text-muted-foreground/60 hover:text-primary transition-colors"
+                  data-testid="button-edit-hi"
+                >
+                  <Pencil size={13} />
+                </button>
               </div>
             )}
+          </div>
 
-            {/* Performance: my rounds vs the official NGAP record */}
-            <PerformancePanel />
-
-            {/* KPI Cards */}
+          {/* Context row, so the index is not a number without a scale */}
+          <div className="flex gap-5 mt-3 pt-3 border-t border-border">
             <div>
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Your Stats</h2>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                <Card>
-                  <CardContent className="pt-4 pb-4">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Target size={14} className="text-primary" />
-                      <span className="text-xs text-muted-foreground">WHS Index</span>
-                      {!editingHI && (
-                        <div className="ml-auto flex items-center gap-1">
-                          <button
-                            onClick={() => setNgapSyncConfirm(true)}
-                            className="text-muted-foreground/50 hover:text-primary transition-colors"
-                            data-testid="button-sync-ngap"
-                            title="Sync from NGAP WHS"
-                            disabled={ngapSyncMutation.isPending || ngapPolling}
-                          >
-                            <RefreshCw size={11} className={(ngapSyncMutation.isPending || ngapPolling) ? "animate-spin" : ""} />
-                          </button>
-                          <button
-                            onClick={() => { setHiDraft(String(latestHcp)); setEditingHI(true); }}
-                            className="text-muted-foreground/50 hover:text-primary transition-colors"
-                            data-testid="button-edit-hi"
-                          >
-                            <Pencil size={11} />
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    {editingHI ? (
-                      <div className="flex items-center gap-1 mt-1">
-                        <Input
-                          autoFocus
-                          type="number"
-                          step="0.1"
-                          min="0"
-                          max="54"
-                          value={hiDraft}
-                          onChange={e => setHiDraft(e.target.value)}
-                          className="h-7 w-20 text-sm font-bold tabular px-2"
-                          data-testid="input-hi-value"
-                          onKeyDown={e => {
-                            if (e.key === "Enter") {
-                              hiMutation.mutate(hiDraft);
-                              setEditingHI(false);
-                            }
-                            if (e.key === "Escape") setEditingHI(false);
-                          }}
-                        />
-                        <button
-                          onClick={() => { hiMutation.mutate(hiDraft); setEditingHI(false); }}
-                          className="text-green-600 hover:text-green-700"
-                          data-testid="button-hi-confirm"
-                        >
-                          <Check size={14} />
-                        </button>
-                        <button
-                          onClick={() => setEditingHI(false)}
-                          className="text-muted-foreground hover:text-foreground"
-                          data-testid="button-hi-cancel"
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="font-display font-bold text-xl tabular">{latestHcp}</div>
-                    )}
-                    {lastSyncLabel && (
-                      <p className="text-[9px] text-muted-foreground/60 mt-1 leading-tight">
-                        Pulled {lastSyncLabel}
-                      </p>
-                    )}
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="pt-4 pb-4">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Flag size={14} className="text-primary" />
-                      <span className="text-xs text-muted-foreground">Rounds Played</span>
-                    </div>
-                    {isLoading ? <Skeleton className="h-8 w-16" /> : (
-                      <div className="font-display font-bold text-xl tabular">{allRounds.length}</div>
-                    )}
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="pt-4 pb-4">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Activity size={14} className="text-primary" />
-                      <span className="text-xs text-muted-foreground">Avg Putts/Hole</span>
-                    </div>
-                    {isLoading ? <Skeleton className="h-8 w-16" /> : (
-                      <div className="font-display font-bold text-xl tabular">{avgPuttsPerHole || "—"}</div>
-                    )}
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="pt-4 pb-4">
-                    <div className="flex items-center gap-2 mb-1">
-                      <TrendingDown size={14} className="text-primary" />
-                      <span className="text-xs text-muted-foreground">Avg Score vs Par</span>
-                    </div>
-                    {isLoading ? <Skeleton className="h-8 w-16" /> : (
-                      <div className={`font-display font-bold text-xl tabular ${avgScoreDiff > 0 ? "text-orange-500" : avgScoreDiff < 0 ? "text-green-600" : ""}`}>
-                        {avgScoreDiff ? (avgScoreDiff > 0 ? `+${avgScoreDiff}` : avgScoreDiff) : "—"}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
+              <div className="text-[9px] text-muted-foreground leading-tight">Rounds</div>
+              <div className="text-sm font-bold tabular">{allRounds.length}</div>
+            </div>
+            <div>
+              <div className="text-[9px] text-muted-foreground leading-tight">Best diff</div>
+              <div className="text-sm font-bold tabular">
+                {(() => {
+                  const ds = stats.map(s => s.differential).filter((d): d is number => d != null);
+                  return ds.length ? Math.min(...ds).toFixed(1) : "—";
+                })()}
               </div>
             </div>
-
-            {/* Round History */}
             <div>
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">Round History</h2>
-              {isLoading ? (
-                <div className="space-y-2">
-                  {[1,2,3].map(i => <Skeleton key={i} className="h-16 w-full rounded-xl" />)}
-                </div>
-              ) : allRounds.length === 0 ? (
-                <div className="text-center py-16 space-y-3">
-                  <div className="w-14 h-14 mx-auto rounded-full bg-muted flex items-center justify-center">
-                    <Trophy size={24} className="text-muted-foreground" />
-                  </div>
-                  <h3 className="font-semibold">No rounds yet</h3>
-                  <p className="text-sm text-muted-foreground max-w-xs mx-auto">Start your first round and track your scores, game results, and handicap progression.</p>
-                  <Button onClick={() => navigate("/new-round")} className="gap-1.5 mt-2">
-                    <Plus size={15} /> Start First Round
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <p className="text-[11px] text-muted-foreground/60 text-right pr-1">← Swipe left to edit or delete</p>
-                  {allRounds.map(r => {
-                    const detail = details.find(d => d.round.id === r.id);
-                    const summary = detail ? getRoundScoreSummary(detail) : null;
-                    return (
-                      <SwipeableRoundCard
-                        key={r.id}
-                        round={r}
-                        summary={summary}
-                        onDelete={(id) => setDeleteConfirmId(id)}
-                        navigate={navigate}
-                      />
-                    );
-                  })}
-                </div>
-              )}
+              <div className="text-[9px] text-muted-foreground leading-tight">Best gross</div>
+              <div className="text-sm font-bold tabular">
+                {(() => {
+                  const g = stats.filter(s => s.holes === 18).map(s => s.gross);
+                  return g.length ? Math.min(...g) : "—";
+                })()}
+              </div>
             </div>
-          </TabsContent>
+          </div>
+        </section>
 
-          {/* ── MY STATS TAB ── */}
-          <TabsContent value="my-stats" className="space-y-6">
-            <div>
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">Justin's Round Log</h2>
-              <p className="text-xs text-muted-foreground mb-4">Personal scoring history across all rounds.</p>
+        {/* 2 · Last round */}
+        {lastRound && <LastRoundCard stats={lastRound} navigate={navigate} />}
 
-              {allRoundDetails.isLoading ? (
-                <div className="space-y-2">
-                  {[1,2,3,4].map(i => <Skeleton key={i} className="h-10 w-full" />)}
-                </div>
-              ) : myStatsRows.length === 0 ? (
-                <div className="text-center py-16 space-y-3">
-                  <div className="w-14 h-14 mx-auto rounded-full bg-muted flex items-center justify-center">
-                    <User size={24} className="text-muted-foreground" />
-                  </div>
-                  <h3 className="font-semibold">No rounds recorded yet</h3>
-                  <p className="text-sm text-muted-foreground max-w-xs mx-auto">Complete a round to start tracking your personal stats.</p>
-                  <Button onClick={() => navigate("/new-round")} className="gap-1.5 mt-2">
-                    <Plus size={15} /> Start First Round
-                  </Button>
-                </div>
-              ) : (
-                <div className="overflow-x-auto rounded-xl border border-border">
-                  <table className="w-full text-xs border-collapse min-w-[480px]" data-testid="table-my-stats">
-                    <thead>
-                      <tr className="bg-primary/8 border-b border-border">
-                        <th className="text-left px-3 py-2.5 font-semibold text-muted-foreground">Date</th>
-                        <th className="text-left px-3 py-2.5 font-semibold text-muted-foreground">Location</th>
-                        <th className="text-center px-3 py-2.5 font-semibold text-muted-foreground">Score</th>
-                        <th className="text-center px-3 py-2.5 font-semibold text-muted-foreground">Course HCP</th>
-                        <th className="text-center px-3 py-2.5 font-semibold text-muted-foreground">Net vs Par</th>
-                        <th className="text-center px-3 py-2.5 font-semibold text-muted-foreground">Total Putts</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {myStatsRows.map((row, i) => (
-                        <tr
-                          key={row.id}
-                          className={`border-b border-border/50 hover:bg-muted/20 transition-colors cursor-pointer ${i % 2 === 0 ? "" : "bg-muted/10"}`}
-                          onClick={() => navigate(`/round/${row.id}`)}
-                          data-testid={`row-my-stats-${row.id}`}
-                        >
-                          <td className="px-3 py-2.5 font-medium tabular text-muted-foreground">{row.date}</td>
-                          <td className="px-3 py-2.5 font-semibold truncate max-w-[160px]">{row.location}</td>
-                          <td className="px-3 py-2.5 text-center font-bold tabular">
-                            <span className="text-emerald-600 dark:text-emerald-400">{row.gross || "—"}</span>
-                          </td>
-                          <td className="px-3 py-2.5 text-center tabular text-muted-foreground">
-                            {row.courseHcp != null ? row.courseHcp : "—"}
-                          </td>
-                          <td className="px-3 py-2.5 text-center font-semibold tabular">
-                            {row.netVsPar != null
-                              ? <span className={row.netVsPar <= 0 ? "text-emerald-600 dark:text-emerald-400" : ""}>
-                                  {row.netVsPar > 0 ? `+${row.netVsPar}` : row.netVsPar === 0 ? "E" : row.netVsPar}
-                                </span>
-                              : "—"}
-                          </td>
-                          <td className="px-3 py-2.5 text-center tabular text-muted-foreground">
-                            {row.totalPutts > 0 ? row.totalPutts : "—"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    {/* Summary row */}
-                    {myStatsRows.length > 1 && (
-                      <tfoot>
-                        <tr className="bg-primary/8 border-t-2 border-primary/20">
-                          <td colSpan={2} className="px-3 py-2 font-semibold text-muted-foreground">
-                            Averages ({myStatsRows.length} rounds)
-                          </td>
-                          <td className="px-3 py-2 text-center font-bold tabular text-emerald-600 dark:text-emerald-400">
-                            {Math.round(myStatsRows.reduce((s, r) => s + (r.gross || 0), 0) / myStatsRows.length)}
-                          </td>
-                          <td className="px-3 py-2 text-center tabular text-muted-foreground">
-                            {myStatsRows.some(r => r.courseHcp != null)
-                              ? Math.round(myStatsRows.filter(r => r.courseHcp != null).reduce((s, r) => s + r.courseHcp!, 0) / myStatsRows.filter(r => r.courseHcp != null).length)
-                              : "—"}
-                          </td>
-                          <td className="px-3 py-2 text-center font-semibold tabular">
-                            {(() => {
-                              const rows = myStatsRows.filter(r => r.netVsPar != null);
-                              if (!rows.length) return "—";
-                              const avg = Math.round(rows.reduce((s, r) => s + r.netVsPar!, 0) / rows.length);
-                              return <span className={avg <= 0 ? "text-emerald-600 dark:text-emerald-400" : ""}>
-                                {avg > 0 ? `+${avg}` : avg === 0 ? "E" : avg}
-                              </span>;
-                            })()}
-                          </td>
-                          <td className="px-3 py-2 text-center tabular text-muted-foreground">
-                            {myStatsRows.some(r => r.totalPutts > 0)
-                              ? Math.round(myStatsRows.filter(r => r.totalPutts > 0).reduce((s, r) => s + r.totalPutts, 0) / myStatsRows.filter(r => r.totalPutts > 0).length)
-                              : "—"}
-                          </td>
-                        </tr>
-                      </tfoot>
-                    )}
-                  </table>
-                </div>
-              )}
+        {/* 3 · Trend */}
+        <section className="space-y-3">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Scoring trend
+          </h2>
+          {loadingHistory
+            ? <Skeleton className="h-56 w-full rounded-xl" />
+            : <TrendChart rounds={stats} />}
+        </section>
+
+        {/* 4–6 · Scoring mix, strokes by par, short game */}
+        {loadingHistory
+          ? <div className="space-y-3">
+              <Skeleton className="h-9 w-full rounded-md" />
+              <Skeleton className="h-24 w-full rounded-xl" />
             </div>
-          </TabsContent>
-        </Tabs>
+          : <InsightPanel rounds={stats} />}
+
+        {/* 7 · The official record, folded away — it is a reconciliation tool,
+            not something to read every visit */}
+        <section>
+          <button
+            onClick={() => setShowNgap(v => !v)}
+            className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <ChevronDown size={14} className={`transition-transform ${showNgap ? "" : "-rotate-90"}`} />
+            Compare with NGAP record
+          </button>
+          {showNgap && <div className="mt-4"><PerformancePanel /></div>}
+        </section>
+
+        {/* 8 · History */}
+        <section>
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-3">
+            Round history
+          </h2>
+
+          {loadingHistory ? (
+            <div className="space-y-2">
+              {[1, 2, 3].map(i => <Skeleton key={i} className="h-16 w-full rounded-xl" />)}
+            </div>
+          ) : allRounds.length === 0 ? (
+            <div className="text-center py-14 space-y-3">
+              <div className="w-14 h-14 mx-auto rounded-full bg-muted flex items-center justify-center">
+                <Trophy size={24} className="text-muted-foreground" />
+              </div>
+              <h3 className="font-semibold">No rounds yet</h3>
+              <p className="text-sm text-muted-foreground max-w-xs mx-auto">
+                Start your first round and your scoring, handicap and stats build from there.
+              </p>
+              <Button onClick={() => navigate("/new-round")} className="gap-1.5 mt-2">
+                <Plus size={15} /> Start first round
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-5">
+              <p className="text-[10px] text-muted-foreground/60 text-right">
+                ← Swipe a round to edit or delete
+              </p>
+              {historyGroups.map(group => (
+                <div key={group.label} className="space-y-2">
+                  <div className="flex items-baseline gap-2">
+                    <h3 className="text-[11px] font-semibold text-muted-foreground">{group.label}</h3>
+                    <span className="text-[10px] text-muted-foreground/50 tabular">
+                      {group.rounds.length}
+                    </span>
+                  </div>
+                  {group.rounds.map(r => (
+                    <SwipeableRoundCard
+                      key={r.id}
+                      round={r}
+                      stats={statsById.get(String(r.id)) ?? null}
+                      onDelete={id => setDeleteConfirmId(id)}
+                      navigate={navigate}
+                    />
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
       </main>
 
-      {/* NGAP WHS Sync confirmation dialog */}
+      {/* NGAP sync confirmation */}
       <AlertDialog open={ngapSyncConfirm} onOpenChange={setNgapSyncConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Sync from NGAP WHS?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will fetch your latest Handicap Index from the NGAP WHS portal and update the value here. Continue?
+              Fetches your latest handicap index from the NGAP WHS portal and updates it here.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
-                setNgapSyncConfirm(false);
-                ngapSyncMutation.mutate();
-              }}
+              onClick={() => { setNgapSyncConfirm(false); ngapSyncMutation.mutate(); }}
             >
-              Sync Now
+              Sync now
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Delete confirmation dialog */}
-      <AlertDialog open={deleteConfirmId !== null} onOpenChange={(open) => { if (!open) setDeleteConfirmId(null); }}>
+      {/* Delete confirmation */}
+      <AlertDialog open={deleteConfirmId !== null}
+                   onOpenChange={open => { if (!open) setDeleteConfirmId(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete this round?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently remove the round and all scores. This cannot be undone.
+              This permanently removes the round and all its scores. It cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
