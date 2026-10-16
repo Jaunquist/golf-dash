@@ -1,7 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest, getSession } from "@/lib/queryClient";
+import CountryFlag from "@/components/CountryFlag";
+import { countryName } from "@/lib/countries";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,7 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, Flag, Users, Trophy, ChevronRight, ChevronLeft, Shield, User, Plus, BookOpen, Info, Ghost } from "lucide-react";
+import { ArrowLeft, Flag, Users, Trophy, ChevronRight, ChevronLeft, Shield, User, Plus, BookOpen, Info, Ghost, Loader2} from "lucide-react";
 import type { GameType, ScoringMode } from "@/lib/gameEngine";
 import type { Course } from "@shared/schema";
 
@@ -147,8 +149,17 @@ export default function NewRound() {
   const [step, setStep] = useState<Step>("course");
 
   // ── Courses query ──────────────────────────────────────────────────────
-  const { data: savedCourses = [] } = useQuery<Course[]>({
+  const {
+    data: savedCourses = [],
+    isLoading: coursesLoading,
+    isError: coursesFailed,
+    error: coursesError,
+    refetch: refetchCourses,
+  } = useQuery<Course[]>({
     queryKey: ["/api/courses"],
+    // A cold Apps Script call can take several seconds; one retry covers the
+    // common case of the first request waking the script up
+    retry: 1,
     queryFn: async () => {
       const r = await apiRequest("GET", "/api/courses");
       return r.json();
@@ -166,6 +177,25 @@ export default function NewRound() {
 
   // Course details used for the round (either from a saved course or newly created)
   const [courseName, setCourseName] = useState("");
+  const [courseFilter, setCourseFilter] = useState("");
+
+  /**
+   * The picker list, narrowed by the search box.
+   *
+   * Matches the country name and code as well as the course name, so "japan"
+   * and "JP" both find the same courses without anyone having to remember
+   * which was typed in.
+   */
+  const visibleCourses = useMemo(() => {
+    const q = courseFilter.trim().toLowerCase();
+    if (!q) return savedCourses;
+    return savedCourses.filter(c => {
+      const cc = String((c as any).country || "");
+      return c.name.toLowerCase().includes(q)
+        || cc.toLowerCase().includes(q)
+        || countryName(cc).toLowerCase().includes(q);
+    });
+  }, [savedCourses, courseFilter]);
   const [holeCount, setHoleCount] = useState<9 | 18>(18);
   // front = holes 1-9, back = holes 10-18 (only relevant when holeCount===9 and course has 18 holes)
   const [nineType, setNineType] = useState<"front" | "back">("front");
@@ -569,20 +599,39 @@ export default function NewRound() {
             {/* Course dropdown */}
             <div className="space-y-2">
               <Label>Select Course</Label>
-              <Select value={courseSelectValue} onValueChange={handleCourseSelect}>
+              {savedCourses.length > 6 && (
+                <Input
+                  value={courseFilter}
+                  onChange={e => setCourseFilter(e.target.value)}
+                  placeholder="Search by course or country…"
+                  className="h-9 text-sm"
+                  data-testid="input-course-filter"
+                />
+              )}
+              <Select value={courseSelectValue} onValueChange={handleCourseSelect}
+                      disabled={coursesLoading}>
                 <SelectTrigger data-testid="select-course" className="w-full">
-                  <SelectValue placeholder="Choose a course or add new…" />
+                  <SelectValue placeholder={
+                    coursesLoading ? "Loading your courses…"
+                    : coursesFailed ? "Couldn't load courses"
+                    : "Choose a course or add new…"
+                  } />
                 </SelectTrigger>
                 <SelectContent>
-                  {savedCourses.map(c => (
+                  {visibleCourses.map(c => (
                     <SelectItem key={c.id} value={String(c.id)}>
                       <div className="flex items-center gap-2">
-                        <BookOpen size={13} className="text-muted-foreground" />
+                        <CountryFlag code={(c as any).country} size={14} />
                         <span>{c.name}</span>
                         <span className="text-xs text-muted-foreground ml-1">({c.holes}H · CR {c.courseRating} · S {c.slopeRating})</span>
                       </div>
                     </SelectItem>
                   ))}
+                  {visibleCourses.length === 0 && courseFilter && (
+                    <div className="px-2 py-3 text-xs text-muted-foreground text-center">
+                      Nothing matches “{courseFilter}”.
+                    </div>
+                  )}
                   <SelectItem value="__new__">
                     <div className="flex items-center gap-2 text-primary font-medium">
                       <Plus size={13} />
@@ -591,6 +640,27 @@ export default function NewRound() {
                   </SelectItem>
                 </SelectContent>
               </Select>
+
+              {coursesLoading && (
+                <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <Loader2 size={11} className="animate-spin" />
+                  Fetching your courses — the first load after a while can take a few seconds.
+                </p>
+              )}
+
+              {coursesFailed && (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 space-y-1.5">
+                  <p className="text-[11px] text-destructive">
+                    {String((coursesError as any)?.message || "Couldn't reach the backend.")}
+                  </p>
+                  <button
+                    onClick={() => refetchCourses()}
+                    className="text-[11px] font-semibold text-primary underline underline-offset-2"
+                  >
+                    Try again
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Show saved course info */}

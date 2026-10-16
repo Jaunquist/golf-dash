@@ -6,6 +6,7 @@ import { z } from "zod";
 export const courses = sqliteTable("courses", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
+  country: text("country"),                               // ISO 3166-1 alpha-2, e.g. "PH"
   holes: integer("holes").notNull().default(18),
   courseRating: real("course_rating").notNull().default(72.0),
   slopeRating: integer("slope_rating").notNull().default(113),

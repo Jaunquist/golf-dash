@@ -14,6 +14,7 @@
  */
 
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { normalizeCountry } from "@/lib/countries";
 
 // ── Backend configuration ──────────────────────────────────────────────────
 // Deliberately NOT baked into the build. A GitHub Pages site is public, so a
@@ -275,6 +276,8 @@ export interface Tee {
 export interface Course {
   id: string; name: string; holes: number; courseRating: number;
   slopeRating: number; par: number; pars: string; holeHandicaps: string;
+  /** ISO 3166-1 alpha-2, or "" when it has not been set */
+  country: string;
   tees: Tee[];
 }
 export interface RosterPlayer {
@@ -549,6 +552,7 @@ function fromSheetCourse(c: any): Course {
     par: d ? d.par : 72,
     pars: String(c.pars || "[]"),
     holeHandicaps: String(c.hole_handicaps || "[]"),
+    country: normalizeCountry(c.country),
     tees,
   };
 }
@@ -565,7 +569,8 @@ function toSheetCourse(c: Partial<Course>) {
     slope_rating: t.slopeRating, par: t.par, yardage: t.yardage,
   }));
   return {
-    course_name: c.name, holes: c.holes ?? 18,
+    course_name: c.name, country: (c.country ?? "").toUpperCase(),
+    holes: c.holes ?? 18,
     pars: c.pars ?? "[]", hole_handicaps: c.holeHandicaps ?? "[]",
     tees,
   };
@@ -593,10 +598,27 @@ interface Cache {
   courses: Course[]; players: RosterPlayer[]; settings: Record<string, string>;
 }
 
+/**
+ * Courses, roster and settings, from IndexedDB with a background refresh.
+ *
+ * The failure case used to be silent: a bootstrap that threw returned an empty
+ * cache, so "the backend is unreachable" and "you have no courses" looked
+ * identical — an empty dropdown and no explanation. A first load with nothing
+ * stored now throws instead, so the page can say what went wrong and offer a
+ * retry. A device that has a stored copy still falls back to it, which is what
+ * keeps the app working on a course with no signal.
+ */
 async function cache(force = false): Promise<Cache> {
   const held = await metaGet<Cache>("cache");
   if (held && !force) { void refreshCache(); return held; }
-  return (await refreshCache()) ?? held ?? { courses: [], players: [], settings: {} };
+
+  const fresh = await refreshCache();
+  if (fresh) return fresh;
+  if (held) return held;
+
+  throw new Error(
+    "Couldn't load courses from the backend. Check your connection and try again."
+  );
 }
 
 async function refreshCache(): Promise<Cache | null> {
@@ -650,7 +672,10 @@ export async function apiRequest(method: string, url: string, data?: unknown): P
       const existing = c.courses.find(x => x.id === seg[2]);
       if (!existing) return reply({ error: "Course not found" }, 404);
       const merged = { ...existing, ...body };
-      await call("saveCourse", toSheetCourse(merged));
+      // seg[2] is the name this course had before the edit. Sending it tells
+      // the backend to rename in place and carry the tees and round history
+      // across, instead of appending a second course under the new name.
+      await call("saveCourse", { ...toSheetCourse(merged), rename_from: seg[2] });
       await refreshCache();
       return reply(merged);
     }
@@ -858,7 +883,6 @@ function refreshRemoteRounds(): void {
         gameType: String(r.game_type || ""),
         gameOptions: String(r.game_options || "{}"),
         status: String(r.status || "complete"),
-    ownerEmail: r.owner_email ? String(r.owner_email) : null,
         ownerEmail: r.owner_email ? String(r.owner_email) : null,
         pars: String(r.pars || "[]"),
         holeHandicaps: String(r.hole_handicaps || "[]"),
