@@ -1,7 +1,7 @@
-import { useState, useRef, useCallback, useMemo } from "react";
+import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
-import { apiRequest, queryClient as qc, isAdmin } from "@/lib/queryClient";
+import { apiRequest, queryClient as qc, isAdmin, onAuthChange } from "@/lib/queryClient";
 import { saveRoundsList, saveJustinRounds, removeRoundFromCache } from "@/lib/roundsCache";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -59,6 +59,13 @@ function signed(n: number): string {
   return n > 0 ? `+${n}` : n === 0 ? "E" : String(n);
 }
 
+/** "2026-10-14" → "14 Oct". The year is already on the month header above. */
+function shortDate(date: string): string {
+  const d = new Date(date + "T00:00:00");
+  if (isNaN(d.getTime())) return date;
+  return d.toLocaleDateString("en-PH", { day: "numeric", month: "short" });
+}
+
 function monthLabel(date: string): string {
   const d = new Date(date + "T00:00:00");
   if (isNaN(d.getTime())) return date.slice(0, 7);
@@ -79,35 +86,72 @@ function SwipeableRoundCard({ round, stats, onDelete, navigate }: {
   const [offset, setOffset] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const startXRef = useRef(0);
+  const startYRef = useRef(0);
   const currentOffsetRef = useRef(0);
   const cardRef = useRef<HTMLDivElement>(null);
+  /** null until the gesture declares itself: "swipe" or "scroll". */
+  const intentRef = useRef<null | "swipe" | "scroll">(null);
+  /** Set once a gesture moves at all, so a scroll never ends in a navigate. */
+  const movedRef = useRef(false);
 
   const snapTo = useCallback((target: number) => {
     setOffset(target);
     currentOffsetRef.current = target;
   }, []);
 
+  /**
+   * The card used to capture the pointer the instant it went down, which is
+   * what made a scroll land on a round: capturing pre-empts the browser's own
+   * decision about whether a drag is a scroll, so a vertical flick stayed with
+   * the card and ended as a tap.
+   *
+   * Now nothing is captured until the gesture has declared itself horizontal.
+   * A vertical one is handed straight back to the page to scroll.
+   */
+  const AXIS_LOCK = 8;   // px before a gesture has to commit to an axis
+
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     if ((e.target as HTMLElement).closest("button")) return;
     startXRef.current = e.clientX;
-    setIsDragging(true);
-    cardRef.current?.setPointerCapture(e.pointerId);
+    startYRef.current = e.clientY;
+    intentRef.current = null;
+    movedRef.current = false;
   }, []);
 
   const onPointerMove = useCallback((e: React.PointerEvent) => {
-    if (!isDragging) return;
-    const raw = currentOffsetRef.current + (e.clientX - startXRef.current);
+    const dx = e.clientX - startXRef.current;
+    const dy = e.clientY - startYRef.current;
+
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) movedRef.current = true;
+
+    if (intentRef.current === null) {
+      if (Math.abs(dx) < AXIS_LOCK && Math.abs(dy) < AXIS_LOCK) return;
+      if (Math.abs(dy) > Math.abs(dx)) {
+        intentRef.current = "scroll";     // leave it to the page
+        return;
+      }
+      intentRef.current = "swipe";
+      setIsDragging(true);
+      cardRef.current?.setPointerCapture(e.pointerId);
+    }
+
+    if (intentRef.current !== "swipe") return;
+    const raw = currentOffsetRef.current + dx;
     setOffset(Math.max(-ACTION_WIDTH, Math.min(0, raw)));
-  }, [isDragging]);
+  }, []);
 
   const onPointerUp = useCallback((e: React.PointerEvent) => {
-    if (!isDragging) return;
+    const wasSwipe = intentRef.current === "swipe";
+    intentRef.current = null;
+    if (!wasSwipe) return;
     setIsDragging(false);
     const totalMove = currentOffsetRef.current + (e.clientX - startXRef.current);
     snapTo(totalMove < -SWIPE_THRESHOLD ? -ACTION_WIDTH : 0);
-  }, [isDragging, snapTo]);
+  }, [snapTo]);
 
   const handleCardClick = useCallback(() => {
+    // A gesture that moved was a scroll or a swipe, never a tap
+    if (movedRef.current) { movedRef.current = false; return; }
     if (offset < -10) { snapTo(0); return; }
     navigate(`/round/${round.id}`);
   }, [offset, round.id, navigate, snapTo]);
@@ -136,7 +180,7 @@ function SwipeableRoundCard({ round, stats, onDelete, navigate }: {
         ref={cardRef}
         className={`relative z-10 flex items-center gap-3 p-3.5 border border-border bg-card cursor-pointer rounded-xl select-none
           ${isDragging ? "" : "transition-transform duration-200 ease-out"}`}
-        style={{ transform: `translateX(${offset}px)` }}
+        style={{ transform: `translateX(${offset}px)`, touchAction: "pan-y" }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -152,7 +196,7 @@ function SwipeableRoundCard({ round, stats, onDelete, navigate }: {
         <div className="flex-1 min-w-0">
           <div className="font-semibold text-sm truncate">{round.courseName}</div>
           <div className="text-xs text-muted-foreground truncate">
-            {round.date} · {roundHoleLabel(round)} · {GAME_LABELS[round.gameType] ?? round.gameType}
+            {shortDate(round.date)} · {roundHoleLabel(round)} · {GAME_LABELS[round.gameType] ?? round.gameType}
           </div>
         </div>
         <div className="text-right flex-shrink-0">
@@ -269,7 +313,11 @@ function DashboardInner() {
   }, [stats]);
 
   const lastRound = stats.length ? stats[stats.length - 1] : null;
-  const admin = isAdmin();
+
+  // Read once per render but subscribed, so the hero switches to the WHS index
+  // the moment refreshIdentity() confirms the role — without a reload.
+  const [admin, setAdmin] = useState(isAdmin);
+  useEffect(() => onAuthChange(() => setAdmin(isAdmin())), []);
   const activeRounds = allRounds.filter(r => r.status === "active");
 
   // Round history, newest first, grouped by month
@@ -595,8 +643,8 @@ function DashboardInner() {
             </div>
           ) : (
             <div className="space-y-5">
-              <p className="text-[10px] text-muted-foreground/60 text-right">
-                ← Swipe a round to edit or delete
+              <p className="text-[10px] text-muted-foreground/60">
+                Swipe a round left to edit or delete
               </p>
               {historyGroups.map(group => (
                 <div key={group.label} className="space-y-2">
@@ -606,14 +654,17 @@ function DashboardInner() {
                       {group.rounds.length}
                     </span>
                   </div>
+                  {/* Narrower than the page and flush left, so the right-hand
+                      strip is somewhere to scroll without landing on a round */}
                   {group.rounds.map(r => (
-                    <SwipeableRoundCard
-                      key={r.id}
-                      round={r}
-                      stats={statsById.get(String(r.id)) ?? null}
-                      onDelete={id => setDeleteConfirmId(id)}
-                      navigate={navigate}
-                    />
+                    <div key={r.id} className="w-[86%] sm:w-full">
+                      <SwipeableRoundCard
+                        round={r}
+                        stats={statsById.get(String(r.id)) ?? null}
+                        onDelete={id => setDeleteConfirmId(id)}
+                        navigate={navigate}
+                      />
+                    </div>
                   ))}
                 </div>
               ))}
