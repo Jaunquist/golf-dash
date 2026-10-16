@@ -33,6 +33,9 @@ export const rounds = sqliteTable("rounds", {
   pars: text("pars").notNull(),                           // JSON array of par per hole [4,3,4,...]
   holeHandicaps: text("hole_handicaps").notNull().default("[]"), // JSON array of hole handicap rankings
   status: text("status").notNull().default("active"),     // active | complete
+  // Who started this round. Only they (or an admin) may write to it — which is
+  // what lets two flights score simultaneously without overwriting each other.
+  ownerEmail: text("owner_email"),
 });
 
 export const insertRoundSchema = createInsertSchema(rounds).omit({ id: true });
