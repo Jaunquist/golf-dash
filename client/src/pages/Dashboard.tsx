@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation, Link } from "wouter";
-import { apiRequest, queryClient as qc } from "@/lib/queryClient";
+import { apiRequest, queryClient as qc, isAdmin } from "@/lib/queryClient";
 import { saveRoundsList, saveJustinRounds, removeRoundFromCache } from "@/lib/roundsCache";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -269,6 +269,7 @@ function DashboardInner() {
   }, [stats]);
 
   const lastRound = stats.length ? stats[stats.length - 1] : null;
+  const admin = isAdmin();
   const activeRounds = allRounds.filter(r => r.status === "active");
 
   // Round history, newest first, grouped by month
@@ -430,12 +431,16 @@ function DashboardInner() {
           </div>
         )}
 
-        {/* 1 · Index hero */}
+        {/* 1 · Hero.
+            The WHS index is the owner's own figure, synced from their NGAP
+            account — there is one of it in the whole system. Showing it to a
+            member put Justin's index on their dashboard as if it were theirs,
+            so members get their scoring summary instead. */}
         <section className="rounded-xl border border-border bg-card px-4 py-3.5">
           <div className="flex items-start gap-3">
             <div className="flex-1 min-w-0">
               <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
-                WHS handicap index
+                {admin ? "WHS handicap index" : "Scoring"}
               </div>
               {editingHI ? (
                 <div className="flex items-center gap-1 mt-1">
@@ -461,15 +466,22 @@ function DashboardInner() {
                 </div>
               ) : (
                 <div className="font-display font-bold text-3xl tabular leading-none mt-1">
-                  {latestHcp != null ? latestHcp.toFixed(1) : "—"}
+                  {admin
+                    ? (latestHcp != null ? latestHcp.toFixed(1) : "—")
+                    : (lastRound ? signed(lastRound.vsPar) : "—")}
                 </div>
               )}
-              {lastSyncLabel && !editingHI && (
+              {admin && lastSyncLabel && !editingHI && (
                 <p className="text-[9px] text-muted-foreground/60 mt-1.5">Pulled {lastSyncLabel}</p>
+              )}
+              {!admin && (
+                <p className="text-[9px] text-muted-foreground/60 mt-1.5">
+                  {lastRound ? "vs par, last round" : "No rounds yet"}
+                </p>
               )}
             </div>
 
-            {!editingHI && (
+            {admin && !editingHI && (
               <div className="flex items-center gap-2 pt-1">
                 <button
                   onClick={() => setNgapSyncConfirm(true)}
