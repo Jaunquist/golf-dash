@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import HoleInputSheet from "@/components/HoleInputSheet";
+import HoleInputSheet, { type HoleEntry } from "@/components/HoleInputSheet";
 import { useParams, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
@@ -18,12 +18,12 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, CheckCircle2, Users, Trash2, UserPlus, Download, Ghost, Pencil, Link2, Share2, StickyNote } from "lucide-react";
 import { ReadOnlyBar } from "@/components/AuthGate";
-import { canEdit } from "@/lib/queryClient";
+import { canEdit, onAuthChange } from "@/lib/queryClient";
 import {
   computeGameResults, cumulativeTotals, scoreCssClass, handicapStrokesOnHole,
   type Player as GPlayer
 } from "@/lib/gameEngine";
-import type { Round, RoundPlayer, HoleScore } from "@shared/schema";
+import type { Round, RoundPlayer, HoleScore, FairwayResult } from "@shared/schema";
 
 const GAME_LABELS: Record<string, string> = {
   best_ball: "Best Ball",
@@ -198,8 +198,23 @@ export default function Scorecard() {
   });
 
   const saveMutation = useMutation({
-    mutationFn: async ({ playerId, hole, strokes, putts }: { playerId: string; hole: number; strokes: number | null; putts: number | null }) => {
-      const r = await apiRequest("PUT", `/api/rounds/${roundId}/scores`, { playerId, hole, strokes, putts });
+    mutationFn: async (
+      { playerId, hole, strokes, putts, penalties, fairway, mishit }: {
+        playerId: string; hole: number;
+        strokes: number | null; putts: number | null;
+        // Optional so a caller that only knows about strokes and putts — the
+        // inline cell editor, say — does not have to pass them
+        penalties?: number | null;
+        fairway?: FairwayResult | null;
+        mishit?: boolean | null;
+      }
+    ) => {
+      const r = await apiRequest("PUT", `/api/rounds/${roundId}/scores`, {
+        playerId, hole, strokes, putts,
+        penalties: penalties ?? null,
+        fairway: fairway ?? null,
+        mishit: mishit ?? null,
+      });
       return r.json();
     },
     onSuccess: () => {
@@ -338,27 +353,47 @@ export default function Scorecard() {
     onError: () => toast({ title: "Failed to save to course", variant: "destructive" }),
   });
 
-  // Open sheet for a specific player + hole
-  const readOnly = !canEdit();
+  /**
+   * Edit rights have to be live state, not a value read once.
+   *
+   * Read straight from canEdit() during render and the component never hears
+   * about a sign-in that happens afterwards — the banner's button works, the
+   * session lands, and the scorecard still behaves as read-only until a manual
+   * reload. onAuthChange fires immediately with the current session and again
+   * on every change, so this starts correct and stays correct.
+   */
+  const [editable, setEditable] = useState(canEdit);
+  useEffect(() => onAuthChange(() => setEditable(canEdit())), []);
+  const readOnly = !editable;
 
   const openSheet = useCallback((playerId: string, hole: number) => {
-    // Viewing a shared link: taps should do nothing rather than fail on save
-    if (readOnly) return;
+    // Say why rather than swallowing the tap — a dead cell reads as a broken app
+    if (readOnly) {
+      toast({
+        title: "Sign in to edit scores",
+        description: "You're viewing this round, not editing it.",
+      });
+      return;
+    }
     setSheetPlayerId(playerId);
     setSheetHole(hole);
     setSheetOpen(true);
-  }, []);
+  }, [readOnly, toast]);
 
   // Save handler called by sheet on save/next/close
-  const handleSheetSave = useCallback((hole: number, strokes: number, putts: number) => {
+  const handleSheetSave = useCallback((hole: number, entry: HoleEntry) => {
     if (sheetPlayerId === null) return;
-    saveMutation.mutate({ playerId: sheetPlayerId, hole, strokes, putts });
+    saveMutation.mutate({ playerId: sheetPlayerId, hole, ...entry });
   }, [sheetPlayerId, saveMutation]);
 
   const handleSheetDelete = useCallback((hole: number) => {
     if (sheetPlayerId === null) return;
-    // Save null strokes/putts to clear the score
-    saveMutation.mutate({ playerId: sheetPlayerId, hole, strokes: null, putts: null });
+    // Null everything, so a cleared hole is "never recorded" rather than a
+    // legitimate zero that would count toward penalty and fairway rates
+    saveMutation.mutate({
+      playerId: sheetPlayerId, hole,
+      strokes: null, putts: null, penalties: null, fairway: null, mishit: null,
+    });
   }, [sheetPlayerId, saveMutation]);
 
   const handleAddPlayer = () => {
@@ -2076,6 +2111,8 @@ export default function Scorecard() {
         const puttsVal = getCellValue(sheetPlayerId, sheetHole, "putts");
         const initStrokes = strVal !== "" ? parseInt(strVal) : null;
         const initPutts = puttsVal !== "" ? parseInt(puttsVal) : 0;
+        // Read straight off the stored score — these have no inline cell editor
+        const stored = scoreLookup[`${sheetPlayerId}_${sheetHole}`];
         return (
           <HoleInputSheet
             key={`${sheetPlayerId}-${sheetHole}`}
@@ -2090,16 +2127,19 @@ export default function Scorecard() {
             strokesOnHole={strokesOnHole}
             initialStrokes={initStrokes}
             initialPutts={initPutts}
+            initialPenalties={stored?.penalties ?? null}
+            initialFairway={(stored?.fairway as FairwayResult | null) ?? null}
+            initialMishit={stored?.mishit ? true : false}
             onSave={handleSheetSave}
             onDelete={handleSheetDelete}
             onClose={() => setSheetOpen(false)}
-            onNavNext={(h, s, p) => {
-              handleSheetSave(h, s, p);
+            onNavNext={(h, e) => {
+              handleSheetSave(h, e);
               if (h < holes) setSheetHole(h + 1);
               else setSheetOpen(false);
             }}
-            onNavPrev={(h, s, p) => {
-              handleSheetSave(h, s, p);
+            onNavPrev={(h, e) => {
+              handleSheetSave(h, e);
               if (h > 1) setSheetHole(h - 1);
             }}
           />
