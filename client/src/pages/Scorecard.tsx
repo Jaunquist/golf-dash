@@ -445,7 +445,12 @@ export default function Scorecard() {
   scores.forEach(s => { scoreLookup[`${s.playerId}_${s.hole}`] = s; });
 
   // Build game engine format
-  const gPlayers: GPlayer[] = players.map(p => ({
+  // Everyone stays on the scorecard; only those in the game are scored. A
+  // guest walking the round keeps their strokes without taking skins off the
+  // people who are actually playing for something.
+  const gamePlayers = players.filter(p => (p as any).inGame !== 0);
+
+  const gPlayers: GPlayer[] = gamePlayers.map(p => ({
     id: p.id, name: p.name, courseHandicap: p.courseHandicap, position: p.position
   }));
 
