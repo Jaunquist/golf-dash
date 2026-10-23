@@ -60,7 +60,10 @@ export const roundPlayers = sqliteTable("round_players", {
   par: integer("par"),                                    // par from THAT tee
   handicapIndex: real("handicap_index").default(0),       // player's handicap index (stored, not computed)
   courseHandicap: integer("course_handicap").notNull().default(0), // WHS-computed course handicap
-  position: integer("position").notNull(),                // 1-4, position 1 = Justin
+  position: integer("position").notNull(),                // 1-8, position 1 = the round's owner
+  // Someone can walk the round and have their scores kept without being part
+  // of the bet. null or 1 means they are in; 0 means scorecard only.
+  inGame: integer("in_game"),
 });
 
 export const insertRoundPlayerSchema = createInsertSchema(roundPlayers).omit({ id: true });
