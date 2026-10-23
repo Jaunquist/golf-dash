@@ -124,6 +124,38 @@ const GAME_DEFS: GameDef[] = [
     hasTiebreaker: false,
   },
   {
+    value: "stableford",
+    label: "Stableford",
+    desc: "Points vs net par: birdie 3, par 2, bogey 1. A blow-up hole costs one hole, not the round.",
+    minPlayers: 1, maxPlayers: 8,
+    isTeam: false, canToggleTeam: false,
+    hasTiebreaker: false,
+  },
+  {
+    value: "stableford_modified",
+    label: "Modified Stableford",
+    desc: "Bigger rewards for birdies, a penalty for doubles. Rewards going for it.",
+    minPlayers: 1, maxPlayers: 8,
+    isTeam: false, canToggleTeam: false,
+    hasTiebreaker: false,
+  },
+  {
+    value: "quota",
+    label: "Quota",
+    desc: "Beat your own target — 36 minus your course handicap — scoring gross points. Levels a mixed field.",
+    minPlayers: 2, maxPlayers: 8,
+    isTeam: false, canToggleTeam: false,
+    hasTiebreaker: false,
+  },
+  {
+    value: "skins",
+    label: "Skins",
+    desc: "Outright low score wins the hole. A tie carries the skin to the next.",
+    minPlayers: 2, maxPlayers: 8,
+    isTeam: false, canToggleTeam: false,
+    hasTiebreaker: false,
+  },
+  {
     value: "niners",
     label: "Niners",
     desc: "3 players, 9 pts/hole: 5-3-1. Ties split.",
@@ -247,10 +279,10 @@ export default function NewRound() {
     || "";
 
   const [players, setPlayers] = useState([
-    { name: myFirstName, handicapIndex: "", courseHandicap: "", tee: "", playerId: "", position: 1, active: true },
-    { name: "",        handicapIndex: "",  courseHandicap: "", tee: "", playerId: "", position: 2, active: false },
-    { name: "",        handicapIndex: "",  courseHandicap: "", tee: "", playerId: "", position: 3, active: false },
-    { name: "",        handicapIndex: "",  courseHandicap: "", tee: "", playerId: "", position: 4, active: false },
+    { name: myFirstName, handicapIndex: "", courseHandicap: "", tee: "", playerId: "", position: 1, active: true, inGame: true },
+    { name: "",        handicapIndex: "",  courseHandicap: "", tee: "", playerId: "", position: 2, active: false, inGame: true },
+    { name: "",        handicapIndex: "",  courseHandicap: "", tee: "", playerId: "", position: 3, active: false, inGame: true },
+    { name: "",        handicapIndex: "",  courseHandicap: "", tee: "", playerId: "", position: 4, active: false, inGame: true },
   ]);
 
   // ── Saved player roster, for the name dropdown ───────────────────────────
@@ -299,10 +331,15 @@ export default function NewRound() {
   const [teamAssignment, setTeamAssignment] = useState<number[]>([1, 1, 2, 2]);
 
   const activePlayers = players.filter(p => p.active);
+  // Someone on the card but out of the bet should not make a 3-player format
+  // look available, so the format list counts only those playing
+  const gamePlayers = players.filter(p => p.active && p.inGame !== false);
   const isSolo = activePlayers.length === 1;
   const today = new Date().toISOString().slice(0, 10);
 
   function resolveGameType(): GameType {
+    // A UI entry, not an engine type: same scoring code, aggressive scale
+    if (selectedDef.value === "stableford_modified") return "stableford";
     if (selectedDef.canToggleTeam) {
       return teamMode === "team"
         ? (selectedDef.teamVariant ?? selectedDef.value)
@@ -544,6 +581,8 @@ export default function NewRound() {
       handicapIndex: isNaN(hi) ? null : hi,
       courseHandicap: chp,
       position: i + 1,
+      // 0 keeps them on the scorecard but out of the scoring
+      inGame: p.inGame === false ? 0 : 1,
     };
   }
 
@@ -567,7 +606,12 @@ export default function NewRound() {
       const nineTypeMeta = holeCount === 9 ? { nineType } : {};
       const gameOptions = solo
         ? { solo: true, ghost: ghostEnabled, scoringMode: "gross", ...nineTypeMeta }
-        : { scoringMode, ptsPerHole, pairsTiebreaker, secondScoreTiebreaker, ...(ta ? { teamAssignment: ta } : {}), ...nineTypeMeta };
+        : {
+            scoringMode, ptsPerHole, pairsTiebreaker, secondScoreTiebreaker,
+            ...(selectedDef.value === "stableford_modified" ? { modifiedStableford: true } : {}),
+            ...(ta ? { teamAssignment: ta } : {}),
+            ...nineTypeMeta,
+          };
 
       const resp = await apiRequest("POST", "/api/rounds", {
         round: {
@@ -1148,6 +1192,27 @@ export default function NewRound() {
                         </div>
                       )}
                     </div>
+
+                    {/* Scorecard and game are different questions. Someone can
+                        walk the round and keep their strokes without being in
+                        the bet — a guest, or a partner who would rather not. */}
+                    {p.active && !isSolo && (
+                      <div className="flex items-center gap-2 mb-3 -mt-1">
+                        <Switch
+                          id={`player-ingame-${idx}`}
+                          data-testid={`switch-ingame-${idx+1}`}
+                          checked={p.inGame !== false}
+                          onCheckedChange={v => updatePlayer(idx, "inGame", v)}
+                          className="scale-90 origin-left"
+                        />
+                        <Label htmlFor={`player-ingame-${idx}`}
+                               className="text-[11px] text-muted-foreground">
+                          {p.inGame !== false
+                            ? "In the game"
+                            : "Scorecard only — not in the game"}
+                        </Label>
+                      </div>
+                    )}
                     {(p.active || idx === 0) && (
                       <div className="space-y-3">
                         <div className="flex gap-3">
@@ -1310,7 +1375,12 @@ export default function NewRound() {
             {/* Game Type cards */}
             <div className="space-y-2">
               {GAME_DEFS.map(def => {
-                const playersOk = activePlayers.length >= def.minPlayers && activePlayers.length <= def.maxPlayers;
+                const n = gamePlayers.length;
+                const playersOk = n >= def.minPlayers && n <= def.maxPlayers;
+                const why = playersOk ? ""
+                  : n < def.minPlayers
+                    ? `Needs ${def.minPlayers}${def.minPlayers === def.maxPlayers ? "" : "+"} in the game`
+                    : `Max ${def.maxPlayers} in the game`;
                 const isSelected = selectedDef.value === def.value;
                 return (
                   <div key={def.value}>
@@ -1334,6 +1404,9 @@ export default function NewRound() {
                         </span>
                       </div>
                       <p className="text-xs text-muted-foreground mt-0.5">{def.desc}</p>
+                      {!playersOk && (
+                        <p className="text-[10px] text-muted-foreground/70 mt-1">{why}</p>
+                      )}
                     </button>
 
                     {isSelected && def.canToggleTeam && playersOk && (

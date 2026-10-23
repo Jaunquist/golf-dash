@@ -17,6 +17,7 @@ export type GameType =
   | "match_play_indiv"
   | "skins"
   | "stableford"
+  | "quota"
   | "solo_none"
   | "solo_ghost";
 
@@ -88,6 +89,20 @@ export function stablefordPointsFor(
   if (toNetPar === 0) return s.par;
   if (toNetPar === 1) return s.bogey;
   return s.double;   // double bogey or worse scores nothing (or a penalty)
+}
+
+/**
+ * Quota scale: bogey 1, par 2, birdie 3, eagle 4 — scored off gross, which is
+ * the conventional quota game. Distinct from Stableford's net scale, where a
+ * double bogey scores nothing.
+ */
+export const STABLEFORD_QUOTA = {
+  albatross: 6, eagle: 4, birdie: 3, par: 2, bogey: 1, double: 0,
+};
+
+/** Points a player must beat to make their quota. */
+export function quotaTarget(courseHandicap: number): number {
+  return Math.max(0, 36 - Math.round(courseHandicap));
 }
 
 export interface Player {
@@ -235,6 +250,34 @@ export function computeGameResults(
           } else {
             holeResult.note = "Halved";
           }
+        }
+        break;
+      }
+
+      case "quota": {
+        /**
+         * Each player has a target — 36 minus their course handicap — and
+         * scores Stableford points off the GROSS score, no strokes given.
+         * The handicap is spent entirely on the target, which is what makes
+         * quota work across a wide spread of abilities without anyone
+         * tracking who gets a shot where.
+         *
+         * Per hole this awards the points; the target is subtracted at the
+         * end by quotaTarget(), since a quota is a round-level result.
+         */
+        const qScale = options.stablefordPoints ?? STABLEFORD_QUOTA;
+        let qBest = -Infinity;
+        players.forEach(p => {
+          const g = grossScores[p.id]?.[h] ?? null;
+          if (g == null) return;
+          const pts = stablefordPointsFor(g - par, qScale);
+          holeResult.points[p.id] = pts;
+          if (pts > qBest) qBest = pts;
+        });
+        if (qBest > -Infinity) {
+          holeResult.winners = players
+            .filter(p => grossScores[p.id]?.[h] != null && holeResult.points[p.id] === qBest)
+            .map(p => p.id);
         }
         break;
       }

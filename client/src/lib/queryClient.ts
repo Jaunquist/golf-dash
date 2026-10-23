@@ -329,7 +329,7 @@ export interface Round {
 export interface RoundPlayer {
   id: string; roundId: string; name: string;
   handicapIndex: number | null; courseHandicap: number; position: number;
-  playerId?: string; tee?: string;
+  playerId?: string; tee?: string; inGame?: number | null;
   courseRating?: number | null; slopeRating?: number | null; par?: number | null;
 }
 export interface HoleScore {
@@ -589,6 +589,7 @@ function toSheetPlayer(p: RoundPlayer, scores: HoleScore[]) {
     handicap_index: p.handicapIndex,
     course_handicap: p.courseHandicap, position: p.position, strokes, putts,
     penalties, fairways, mishits,
+    in_game: (p as any).inGame === 0 ? 0 : 1,
   };
 }
 
@@ -1043,6 +1044,7 @@ function fromPublicRound(id: string, pub: any) {
       par: p.par == null ? null : Number(p.par),
       handicapIndex: p.handicap_index ?? null,
       courseHandicap: Number(p.course_handicap) || 0,
+      inGame: p.in_game === 0 || p.in_game === "0" ? 0 : 1,
       position: Number(p.position) || 1,
     });
     (p.strokes || []).forEach((st: number | null, i: number) => {
@@ -1089,7 +1091,8 @@ async function load(id: string): Promise<Stored | null> {
         slopeRating: p.slope_rating === "" || p.slope_rating == null ? null : Number(p.slope_rating),
         par: p.par === "" || p.par == null ? null : Number(p.par),
         handicapIndex: p.handicap_index ?? null,
-        courseHandicap: Number(p.course_handicap) || 0, position: Number(p.position) || 1,
+        courseHandicap: Number(p.course_handicap) || 0,
+      inGame: p.in_game === 0 || p.in_game === "0" ? 0 : 1, position: Number(p.position) || 1,
       });
       (p.strokes || []).forEach((st: number | null, i: number) => {
         if (st != null || (p.putts && p.putts[i] != null))
@@ -1149,6 +1152,7 @@ async function createRound(payload: any): Promise<{ round: Round; players: Round
       courseRating: cr, slopeRating: sl, par: pr,
       handicapIndex: hi, courseHandicap: chcp,
       position: Number(p.position) || i + 1,
+      inGame: p.inGame === 0 || p.inGame === false ? 0 : 1,
     };
   });
 
