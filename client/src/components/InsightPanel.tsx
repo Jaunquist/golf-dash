@@ -207,9 +207,58 @@ function StrokesByPar({ agg }: { agg: Aggregate }) {
 
 // ── 3 · Short game and tee ─────────────────────────────────────────────────
 
-function Tile({ label, value, sub, delta, betterIsLower = true }: {
+/**
+ * A tile's history as a bare line — no axes, no labels, no tooltip.
+ *
+ * The number above it says where you are; this says whether you got there
+ * going up or down. Anything more (gridlines, values) would compete with the
+ * figure it is annotating.
+ *
+ * Only the handful of metrics worth a shape get one. Nine sparklines in a grid
+ * is wallpaper.
+ */
+function Spark({ values, betterIsLower }: {
+  values: (number | null)[]; betterIsLower: boolean;
+}) {
+  const pts = values.filter((v): v is number => v != null);
+  if (pts.length < 3) return null;
+
+  const W = 56, H = 16, PAD = 1.5;
+  const min = Math.min(...pts), max = Math.max(...pts);
+  const span = max - min || 1;
+  const step = pts.length > 1 ? (W - PAD * 2) / (pts.length - 1) : 0;
+
+  const d = pts.map((v, i) => {
+    const x = PAD + i * step;
+    const y = PAD + (H - PAD * 2) * (1 - (v - min) / span);
+    return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+
+  // Direction over the last third, which is what "lately" means here
+  const tail = pts.slice(-Math.max(2, Math.ceil(pts.length / 3)));
+  const rising = tail[tail.length - 1] > tail[0];
+  const good = betterIsLower ? !rising : rising;
+
+  const lastX = PAD + (pts.length - 1) * step;
+  const lastY = PAD + (H - PAD * 2) * (1 - (pts[pts.length - 1] - min) / span);
+
+  return (
+    <svg width={W} height={H} className="mt-1 overflow-visible" aria-hidden>
+      <path d={d} fill="none" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round"
+            className={good ? "stroke-green-600 dark:stroke-green-400"
+                            : "stroke-orange-500 dark:stroke-orange-400"} />
+      <circle cx={lastX} cy={lastY} r="1.8"
+              className={good ? "fill-green-600 dark:fill-green-400"
+                              : "fill-orange-500 dark:fill-orange-400"} />
+    </svg>
+  );
+}
+
+function Tile({ label, value, sub, delta, spark, betterIsLower = true }: {
   label: string; value: string; sub?: string;
   delta?: number | null; betterIsLower?: boolean;
+  /** Per-round history, oldest first. Omit for tiles that do not earn one. */
+  spark?: (number | null)[];
 }) {
   const good = delta == null ? null : betterIsLower ? delta < 0 : delta > 0;
   return (
@@ -226,51 +275,71 @@ function Tile({ label, value, sub, delta, betterIsLower = true }: {
         )}
       </div>
       {sub && <div className="text-[9px] text-muted-foreground/70 mt-0.5 leading-tight">{sub}</div>}
+      {spark && <Spark values={spark} betterIsLower={betterIsLower} />}
     </div>
   );
 }
 
-function ShortGame({ agg, prior }: { agg: Aggregate; prior: Aggregate | null }) {
-  const d = (a: number | null | undefined, b: number | null | undefined) =>
-    a != null && b != null ? a - b : null;
+function ShortGame({ agg, recent, prior, rounds }: {
+  agg: Aggregate;              // what the numbers show, per the scope chip
+  recent: Aggregate;           // last 5, for the arrow
+  prior: Aggregate | null;     // the 5 before that
+  rounds: RoundStats[];
+}) {
+  /**
+   * The arrow always compares the last five rounds against the five before.
+   * Comparing an all-time average against a recent window would make the
+   * arrow mean something different depending on which chip was selected.
+   */
+  const d = (pick: (a: Aggregate) => number | null | undefined) => {
+    const a = pick(recent), b = prior ? pick(prior) : null;
+    return a != null && b != null ? a - b : null;
+  };
+
+  // Oldest first, which is the direction a sparkline reads in
+  const series = (pick: (r: RoundStats) => number | null) => rounds.map(pick);
 
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
       <Tile label="GIR" betterIsLower={false}
             value={agg.girPct != null ? `${agg.girPct}%` : "—"}
             sub={agg.girPct != null ? `${agg.mix.birdie + agg.mix.par + agg.mix.bogey + agg.mix.double} holes` : "needs putts"}
-            delta={d(agg.girPct, prior?.girPct)} />
+            delta={d(x => x.girPct)}
+            spark={series(r => r.girPct)} />
       <Tile label="Putts / round"
             value={agg.avgPutts != null ? String(agg.avgPutts) : "—"}
             sub={agg.avgPuttsPerHole != null ? `${agg.avgPuttsPerHole} per hole` : undefined}
-            delta={d(agg.avgPutts, prior?.avgPutts)} />
+            delta={d(x => x.avgPutts)}
+            spark={series(r => r.putts)} />
       <Tile label="Putts / GIR"
             value={agg.puttsPerGir != null ? String(agg.puttsPerGir) : "—"}
-            delta={d(agg.puttsPerGir, prior?.puttsPerGir)} />
+            delta={d(x => x.puttsPerGir)} />
       <Tile label="3-putts / round"
             value={agg.threePuttsPerRound != null ? String(agg.threePuttsPerRound) : "—"}
-            delta={d(agg.threePuttsPerRound, prior?.threePuttsPerRound)} />
+            delta={d(x => x.threePuttsPerRound)}
+            spark={series(r => r.threePutts)} />
       <Tile label="Scrambling" betterIsLower={false}
             value={agg.scramblePct != null ? `${agg.scramblePct}%` : "—"}
             sub="par or better after missing the green"
-            delta={d(agg.scramblePct, prior?.scramblePct)} />
+            delta={d(x => x.scramblePct)}
+            spark={series(r => r.scramblePct)} />
       <Tile label="Penalties / round"
             value={agg.avgPenalties != null ? String(agg.avgPenalties) : "—"}
             sub={agg.avgPenalties == null ? "not yet tracked" : undefined}
-            delta={d(agg.avgPenalties, prior?.avgPenalties)} />
+            delta={d(x => x.avgPenalties)} />
       <Tile label="Fairways" betterIsLower={false}
             value={agg.fairwayPct != null ? `${agg.fairwayPct}%` : "—"}
             sub={agg.fairwayPct == null ? "not yet tracked" : "par 4s and 5s"}
-            delta={d(agg.fairwayPct, prior?.fairwayPct)} />
+            delta={d(x => x.fairwayPct)} />
       <Tile label="Mishit off tee"
             value={agg.mishitPct != null ? `${agg.mishitPct}%` : "—"}
             sub={agg.mishitPct == null ? "not yet tracked" : "did not advance"}
-            delta={d(agg.mishitPct, prior?.mishitPct)} />
+            delta={d(x => x.mishitPct)} />
       <Tile label="Avg vs par / hole"
             value={agg.avgVsParPerHole != null
               ? (agg.avgVsParPerHole > 0 ? `+${agg.avgVsParPerHole}` : String(agg.avgVsParPerHole))
               : "—"}
-            delta={d(agg.avgVsParPerHole, prior?.avgVsParPerHole)} />
+            delta={d(x => x.avgVsParPerHole)} />
     </div>
   );
 }
@@ -353,14 +422,19 @@ export default function InsightPanel({ rounds }: { rounds: RoundStats[] }) {
 
       <Section
         title="Short game & tee"
-        hint={
+        hint={[
           agg.roundsWithPutts < agg.rounds
             ? `Putting figures come from the ${agg.roundsWithPutts} of ${agg.rounds} rounds where putts were entered.`
-            : undefined
-        }
-        aside={prior && <span className="text-[10px] text-muted-foreground/60">vs previous 5</span>}
+            : "",
+          split.prior
+            ? "Arrows and lines compare your last 5 rounds with the 5 before."
+            : "Trends appear once you have 8 rounds or so to compare across.",
+        ].filter(Boolean).join(" ")}
+        aside={split.prior && (
+          <span className="text-[10px] text-muted-foreground/60">last 5 vs previous 5</span>
+        )}
       >
-        <ShortGame agg={agg} prior={prior} />
+        <ShortGame agg={agg} recent={split.recent} prior={split.prior} rounds={complete} />
       </Section>
     </div>
   );
