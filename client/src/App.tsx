@@ -1,4 +1,4 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, type ComponentType } from "react";
 import { Switch, Route, Router } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -7,6 +7,45 @@ import { Toaster } from "@/components/ui/toaster";
 import { useOfflineToast } from "@/hooks/use-offline-toast";
 import SyncStatus from "@/components/SyncStatus";
 import RouteFallback from "@/components/RouteFallback";
+
+const RELOADED_KEY = "golf-dash-chunk-reload";
+
+/**
+ * lazy(), but survives a deploy that happened while the app was open.
+ *
+ * Split chunks are written with a content hash — Scorecard-CsVjJx1x.js — and a
+ * new build replaces the whole folder, so yesterday's filenames stop existing.
+ * A tab still holding the old index.html then asks for a chunk that is gone and
+ * dies with "Failed to fetch dynamically imported module", which looks to the
+ * user like the app is simply broken.
+ *
+ * Reloading fetches the current index.html and the hashes it actually refers
+ * to, which fixes it every time. The sessionStorage flag makes that at most one
+ * reload per session, so a genuinely missing chunk or a dead network surfaces
+ * as an error instead of an infinite refresh loop.
+ */
+function lazyRoute(load: () => Promise<{ default: ComponentType<any> }>) {
+  return lazy(() =>
+    load().catch(err => {
+      let already = "1";
+      try { already = sessionStorage.getItem(RELOADED_KEY) ?? ""; } catch { /* blocked */ }
+      if (!already) {
+        try { sessionStorage.setItem(RELOADED_KEY, "1"); } catch { /* blocked */ }
+        window.location.reload();
+        // Never resolves; the reload takes over before React renders anything
+        return new Promise<never>(() => {});
+      }
+      throw err;
+    })
+  );
+}
+
+// A load that works clears the flag, so the next deploy gets its own retry
+if (typeof window !== "undefined") {
+  window.addEventListener("load", () => {
+    try { sessionStorage.removeItem(RELOADED_KEY); } catch { /* blocked */ }
+  });
+}
 
 /**
  * Routes load on demand.
@@ -17,12 +56,12 @@ import RouteFallback from "@/components/RouteFallback";
  * appeared. Splitting here means a shared link fetches the scorecard and little
  * else.
  */
-const Dashboard       = lazy(() => import("@/pages/Dashboard"));
-const NewRound        = lazy(() => import("@/pages/NewRound"));
-const Scorecard       = lazy(() => import("@/pages/Scorecard"));
-const Courses         = lazy(() => import("@/pages/Courses"));
-const SharedScorecard = lazy(() => import("@/pages/SharedScorecard"));
-const NotFound        = lazy(() => import("@/pages/not-found"));
+const Dashboard       = lazyRoute(() => import("@/pages/Dashboard"));
+const NewRound        = lazyRoute(() => import("@/pages/NewRound"));
+const Scorecard       = lazyRoute(() => import("@/pages/Scorecard"));
+const Courses         = lazyRoute(() => import("@/pages/Courses"));
+const SharedScorecard = lazyRoute(() => import("@/pages/SharedScorecard"));
+const NotFound        = lazyRoute(() => import("@/pages/not-found"));
 
 function AppInner() {
   useOfflineToast();
