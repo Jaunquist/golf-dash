@@ -87,13 +87,33 @@ function bucketLabel(key: string, range: Range): string {
   return key.slice(5).replace("-", "/");
 }
 
+/**
+ * Filled for eighteens, hollow for a nine that has been doubled onto the
+ * 18-hole axis. The shape carries the caveat, so the record stays complete
+ * without a filter hiding a third of it.
+ */
+function RoundDot(props: any) {
+  const { cx, cy, payload, dataKey } = props;
+  if (cx == null || cy == null || payload?.[dataKey] == null) return null;
+  const estimated = payload.nine || payload.mixed;
+  return (
+    <circle cx={cx} cy={cy} r={estimated ? 4 : 3.2}
+            fill={estimated ? "var(--card, #fff)" : "#1d5c3a"}
+            stroke="#1d5c3a" strokeWidth={estimated ? 1.8 : 1} />
+  );
+}
+
 export default function PerformancePanel() {
   const [tab, setTab] = useState<"mine" | "ngap">("mine");
   const [range, setRange] = useState<Range>("365d");
   const [series, setSeries] = useState<Series>("index");
   const [showNgap, setShowNgap] = useState(true);
   const [showMine, setShowMine] = useState(true);
-  const [holeFilter, setHoleFilter] = useState<HoleFilter>("18");
+  // "all" by default: hiding the nines meant a third of the record was
+// invisible unless you went looking for it. A nine is doubled onto the
+// 18-hole axis and drawn hollow, so the estimate is visible rather than
+// silently mixed in.
+  const [holeFilter, setHoleFilter] = useState<HoleFilter>("all");
   const [showTrend, setShowTrend] = useState(true);
 
   const { data, isLoading } = useQuery<Trends>({
@@ -116,13 +136,14 @@ export default function PerformancePanel() {
 
     const buckets: Record<string, {
       key: string; ngapVals: number[]; myVals: number[];
-      course: string; date: string;
+      course: string; date: string; nines: number; eighteens: number;
     }> = {};
 
     const touch = (date: string) => {
       const key = bucketOf(date, range);
       if (!buckets[key]) {
-        buckets[key] = { key, ngapVals: [], myVals: [], course: "", date };
+        buckets[key] = { key, ngapVals: [], myVals: [], course: "", date,
+                         nines: 0, eighteens: 0 };
       }
       return buckets[key];
     };
@@ -152,6 +173,7 @@ export default function PerformancePanel() {
       if (raw == null) return;
       const b = touch(p.date);
       b.myVals.push(scale(raw, p.holes));
+      if (p.holes === 9) b.nines++; else b.eighteens++;
       b.course = p.course || b.course;
     });
 
@@ -167,6 +189,10 @@ export default function PerformancePanel() {
         myDiff: avg(b.myVals),
         myCourse: b.course,
         n: b.myVals.length,
+        // A bucket of only nines is wholly an estimate; a mixed month is
+        // partly one. Either way the dot is drawn hollow.
+        nine: b.nines > 0 && b.eighteens === 0,
+        mixed: b.nines > 0 && b.eighteens > 0,
         trend: null as number | null,
       }));
 
@@ -292,7 +318,7 @@ export default function PerformancePanel() {
           <span className="flex-1" />
 
           <div className="flex rounded-md overflow-hidden ring-1 ring-border">
-            {([["18", "18h"], ["9", "9h"], ["all", "All"]] as [HoleFilter, string][]).map(([v, lbl]) => (
+            {([["all", "All"], ["18", "18h"], ["9", "9h"]] as [HoleFilter, string][]).map(([v, lbl]) => (
               <button
                 key={v}
                 onClick={() => setHoleFilter(v)}
@@ -337,8 +363,9 @@ export default function PerformancePanel() {
 
         {holeFilter === "all" && series !== "index" && (
           <p className="text-[10px] text-muted-foreground -mt-1">
-            9-hole scores are doubled to sit on the same axis. Rough comparison
-            only — WHS pairs two 9-hole differentials rather than doubling.
+            Hollow dots are 9-hole rounds, doubled onto the 18-hole axis. A
+            rough comparison only — WHS pairs two 9-hole differentials rather
+            than doubling one.
           </p>
         )}
 
@@ -388,8 +415,9 @@ export default function PerformancePanel() {
                 )}
                 {showMine && (aggregated
                   ? <Line type="monotone" dataKey="myDiff" stroke="#1d5c3a" strokeWidth={2}
-                          dot={{ r: 3 }} connectNulls name="myDiff" />
-                  : <Scatter dataKey="myDiff" fill="#1d5c3a" name="myDiff" />
+                          dot={<RoundDot dataKey="myDiff" />} connectNulls name="myDiff" />
+                  : <Scatter dataKey="myDiff" fill="#1d5c3a" name="myDiff"
+                             shape={<RoundDot dataKey="myDiff" />} />
                 )}
               </ComposedChart>
             </ResponsiveContainer>
