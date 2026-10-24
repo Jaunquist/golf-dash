@@ -121,16 +121,21 @@ export default defineConfig({
   root: path.resolve(import.meta.dirname, "client"),
   base: "./",
   build: {
-    rollupOptions: {
-      output: {
-        // Recharts is large and only the dashboard uses it; keeping it in its
-        // own chunk means a shared scorecard never downloads it.
-        manualChunks: {
-          charts: ["recharts"],
-          vendor: ["react", "react-dom", "wouter", "@tanstack/react-query"],
-        },
-      },
-    },
+    /**
+     * No manualChunks, deliberately.
+     *
+     * Forcing recharts into a "charts" chunk and React into a "vendor" chunk
+     * split a dependency graph that has cycles in it across chunk boundaries.
+     * Rollup then has no evaluation order that satisfies every edge, and the
+     * result was a hard crash on the scorecard — "Cannot access 'p' before
+     * initialization" — as one chunk read a const from another whose module
+     * body had not run yet.
+     *
+     * Rollup's automatic chunking respects those cycles. The route-level
+     * lazy() splitting in App.tsx is where the real win was anyway: it is a
+     * genuine dynamic import, so a shared scorecard still never downloads the
+     * dashboard or its charts.
+     */
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
   },
