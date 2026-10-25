@@ -122,19 +122,31 @@ export default defineConfig({
   base: "./",
   build: {
     /**
+     * Source maps in production.
+     *
+     * Without them a crash reports as "Cannot access 'p' before
+     * initialization at Je (Scorecard-CCU44EaG.js:1:1117)" — a minified name
+     * in a one-line file, which says nothing about which variable in which
+     * source file is at fault. With them the stack names the real identifier
+     * and the real line, so a bug like this is a ten-second read instead of
+     * an afternoon of inference.
+     *
+     * The .map files are only fetched when DevTools is open, so visitors pay
+     * nothing for them. They do make the deployed source readable to anyone
+     * who looks, which is fine here: the repo is public already and no secret
+     * is in the bundle.
+     */
+    sourcemap: true,
+
+    /**
      * No manualChunks, deliberately.
      *
-     * Forcing recharts into a "charts" chunk and React into a "vendor" chunk
-     * split a dependency graph that has cycles in it across chunk boundaries.
-     * Rollup then has no evaluation order that satisfies every edge, and the
-     * result was a hard crash on the scorecard — "Cannot access 'p' before
-     * initialization" — as one chunk read a const from another whose module
-     * body had not run yet.
-     *
-     * Rollup's automatic chunking respects those cycles. The route-level
-     * lazy() splitting in App.tsx is where the real win was anyway: it is a
-     * genuine dynamic import, so a shared scorecard still never downloads the
-     * dashboard or its charts.
+     * Hand-grouping recharts and React into separate chunks splits a
+     * dependency graph that has cycles in it across chunk boundaries, and
+     * Rollup then has no evaluation order that satisfies every edge.
+     * Automatic chunking respects those cycles. The route-level lazy() in
+     * App.tsx is where the real saving was anyway — a genuine dynamic import,
+     * so a shared scorecard still never downloads the dashboard or its charts.
      */
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
