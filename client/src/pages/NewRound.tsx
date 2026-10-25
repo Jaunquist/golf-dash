@@ -621,9 +621,8 @@ export default function NewRound() {
     : ["course", "players", "game"];
 
   const SCORING_MODE_LABELS: Record<ScoringMode, string> = {
-    net_auto:   "Net — by hole HCP",
-    net_manual: "Net — manual HCP",
-    gross:      "Gross (no handicap)",
+    net_auto: "Net — by hole HCP",
+    gross:    "Gross (no handicap)",
   };
 
   // ── Create round mutation ───────────────────────────────────────────────
@@ -1499,7 +1498,7 @@ export default function NewRound() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                {(["net_auto", "net_manual", "gross"] as ScoringMode[]).map(mode => (
+                {(["net_auto", "gross"] as ScoringMode[]).map(mode => (
                   <button
                     key={mode}
                     onClick={() => setScoringMode(mode)}
@@ -1509,8 +1508,7 @@ export default function NewRound() {
                   >
                     <div className="font-semibold">{SCORING_MODE_LABELS[mode]}</div>
                     <div className="text-[11px] text-muted-foreground mt-0.5">
-                      {mode === "net_auto" && "Handicap strokes distributed across holes by HCP rank."}
-                      {mode === "net_manual" && "Course handicap applied as-entered, distributed across holes."}
+                      {mode === "net_auto" && "Handicap strokes distributed across holes by HCP rank. Edit a player's course handicap to change what they get."}
                       {mode === "gross" && "Raw strokes only — no handicap adjustment."}
                     </div>
                   </button>
