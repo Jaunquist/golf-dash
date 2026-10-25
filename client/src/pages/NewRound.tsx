@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiRequest, getSession, countryName, normalizeCountry, flagEmoji } from "@/lib/queryClient";
+import { apiRequest, getSession, countryName, normalizeCountry, flagEmoji, joinableRounds, newId } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -173,6 +173,15 @@ const GAME_DEFS: GameDef[] = [
   },
 ];
 
+/** Compact labels for the join picker, where space is tight. */
+const GAME_LABELS_SHORT: Record<string, string> = {
+  best_ball: "Best Ball", best_ball_pairs: "Best Ball",
+  high_low: "High Low", high_low_pairs: "High Low",
+  match_play: "Match Play", match_play_indiv: "Match Play",
+  niners: "Niners", twelves: "Twelves",
+  stableford: "Stableford", quota: "Quota", skins: "Skins",
+};
+
 const PLAYER_COLORS = [
   "bg-emerald-600", "bg-blue-600", "bg-orange-500", "bg-purple-500"
 ];
@@ -308,6 +317,17 @@ export default function NewRound() {
   const [ghostEnabled, setGhostEnabled] = useState(false);
   const [roundDate, setRoundDate] = useState(() => new Date().toISOString().slice(0, 10));
 
+  /**
+   * Joining an existing flight.
+   *
+   * Eight players is two flights, not one eight-row scorecard: each flight
+   * stays a four-player round with a single writer, which is what stops two
+   * phones overwriting each other. They are tied together by a shared event
+   * id, and the combined leaderboard reads both.
+   */
+  const [joinable, setJoinable] = useState<any[]>([]);
+  const [joinRoundId, setJoinRoundId] = useState<string | null>(null);
+
   // Query ghost data when a course is selected
   const { data: ghostData } = useQuery<{ scores: Record<number, { strokes: number; roundDate: string }>; roundCount: number }>({
     queryKey: ["/api/courses", selectedCourse?.id, "ghost"],
@@ -329,6 +349,38 @@ export default function NewRound() {
   const [team1Indices, setTeam1Indices] = useState<number[]>([0, 1]);
   // teamAssignment[i] = team number (1, 2, 3=Solo) per active player index
   const [teamAssignment, setTeamAssignment] = useState<number[]>([1, 1, 2, 2]);
+
+  // Refreshed when the course or date changes, so the list always matches
+  // what is about to be created
+  useEffect(() => {
+    let cancelled = false;
+    const name = (selectedCourse?.name ?? courseName).trim();
+    if (!name) { setJoinable([]); return; }
+    joinableRounds(name, roundDate).then(rs => {
+      if (!cancelled) setJoinable(rs);
+    });
+    return () => { cancelled = true; };
+  }, [selectedCourse?.name, courseName, roundDate]);
+
+  const joinTarget = joinable.find(r => String(r.id) === joinRoundId) ?? null;
+
+  // Inherit the hole count and the course setup from the flight being joined,
+  // so both scorecards are scoring the same holes off the same stroke index
+  useEffect(() => {
+    if (!joinTarget) return;
+    const h = Number(joinTarget.holes) === 9 ? 9 : 18;
+    setHoleCount(h);
+    try {
+      const tp = JSON.parse(joinTarget.pars || "[]");
+      if (Array.isArray(tp) && tp.length) setPars(tp);
+      const th = JSON.parse(joinTarget.hole_handicaps || "[]");
+      if (Array.isArray(th) && th.length) setHoleHcps(th);
+    } catch { /* malformed on the other round — keep our defaults */ }
+    try {
+      const o = JSON.parse(joinTarget.game_options || "{}");
+      if (o?.nineType) setNineType(o.nineType);
+    } catch { /* same */ }
+  }, [joinTarget]);
 
   const activePlayers = players.filter(p => p.active);
   // Someone on the card but out of the bet should not make a 3-player format
@@ -556,7 +608,17 @@ export default function NewRound() {
     return isSolo && activePlayers[0]?.name.trim().length > 0 && courseName.trim().length > 0;
   }
 
-  const steps: Step[] = ["course", "players", "game"];
+  /**
+   * Joining a flight removes the game step.
+   *
+   * The second flight is not configuring a game, it is entering an existing
+   * one: format, scoring mode, hole count, pars and stroke index all come
+   * from the round being joined. Letting the joiner pick again would produce
+   * two flights the leaderboard cannot combine.
+   */
+  const steps: Step[] = joinTarget
+    ? ["course", "players"]
+    : ["course", "players", "game"];
 
   const SCORING_MODE_LABELS: Record<ScoringMode, string> = {
     net_auto:   "Net — by hole HCP",
@@ -588,7 +650,10 @@ export default function NewRound() {
 
   const createMutation = useMutation({
     mutationFn: async (solo: boolean = false) => {
-      const gt = solo ? SOLO_GAME_TYPE : resolveGameType();
+      // A joined flight plays the original's game, verbatim
+      const gt = joinTarget ? String(joinTarget.game_type)
+               : solo ? SOLO_GAME_TYPE
+               : resolveGameType();
       let playersPayload;
       if (!solo && isTeamGame) {
         // Assign positions in order (1-based) — engine uses teamAssignment for grouping
@@ -618,9 +683,16 @@ export default function NewRound() {
           courseId: selectedCourse?.id ?? null,
           courseName,
           date: roundDate,
+          // Joining adopts the other flight's event; otherwise this round gets
+          // its own, so a second flight can join it later without a migration
+          eventId: joinTarget
+            ? (joinTarget.event_id || String(joinTarget.id))
+            : newId(),
           holes: holeCount,
           gameType: gt,
-          gameOptions: JSON.stringify(gameOptions),
+          gameOptions: joinTarget
+            ? String(joinTarget.game_options || "{}")
+            : JSON.stringify(gameOptions),
           pars: JSON.stringify(pars.slice(0, holeCount)),
           holeHandicaps: JSON.stringify(holeHcps.slice(0, holeCount)),
           status: "active",
@@ -774,6 +846,77 @@ export default function NewRound() {
                 </div>
               )}
             </div>
+
+            {/* Join an existing flight.
+                Only appears when someone else already has an active round at
+                this course today — which is exactly the eight-player case. */}
+            {joinable.length > 0 && (
+              <div className="rounded-xl border-2 border-accent/40 bg-accent/5 p-3.5 space-y-2.5">
+                <div className="flex items-center gap-2">
+                  <Users size={15} className="text-accent" />
+                  <span className="font-semibold text-sm">
+                    {joinable.length === 1 ? "A flight is already out there" : "Flights already out there"}
+                  </span>
+                </div>
+                <p className="text-[11px] text-muted-foreground leading-snug">
+                  Join one and you play as a second flight in the same game. Each
+                  flight keeps its own scorecard — only one person enters scores
+                  per flight — and the leaderboard combines them.
+                </p>
+
+                {joinable.map(r => {
+                  const picked = joinRoundId === String(r.id);
+                  return (
+                    <button
+                      key={r.id}
+                      type="button"
+                      onClick={() => setJoinRoundId(picked ? null : String(r.id))}
+                      className={`w-full text-left rounded-lg border-2 px-3 py-2.5 transition-all
+                        ${picked ? "border-accent bg-accent/10" : "border-border hover:border-accent/40"}`}
+                      data-testid={`btn-join-round-${r.id}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold flex-1 truncate">
+                          {(r.owner_email || "").split("@")[0] || "Someone"}'s flight
+                        </span>
+                        <span className="text-[10px] text-muted-foreground">
+                          {GAME_LABELS_SHORT[r.game_type] ?? r.game_type}
+                        </span>
+                        {picked && <Check size={14} className="text-accent shrink-0" />}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground mt-0.5 truncate">
+                        {(r.players || []).join(", ") || "no players yet"}
+                      </div>
+                    </button>
+                  );
+                })}
+
+                {joinTarget && (
+                  <div className="rounded-lg bg-background/60 border border-accent/30 px-2.5 py-2 space-y-1">
+                    <p className="text-[11px] font-semibold text-accent">
+                      Inherited from {(joinTarget.owner_email || "").split("@")[0] || "their"} flight
+                    </p>
+                    <div className="text-[10px] text-muted-foreground leading-relaxed">
+                      <div>Format · <span className="font-medium text-foreground">
+                        {GAME_LABELS_SHORT[joinTarget.game_type] ?? joinTarget.game_type}
+                      </span></div>
+                      <div>Holes · <span className="font-medium text-foreground">{joinTarget.holes}</span></div>
+                      <div>Pars and stroke index · <span className="font-medium text-foreground">theirs</span></div>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground/80 pt-0.5">
+                      You only pick who is in your flight. Both scorecards must score
+                      the same game for the leaderboard to combine them.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {joinTarget && selectedCourse && (
+              <p className="text-[11px] text-muted-foreground text-center">
+                Holes, pars and stroke index are set by the flight you're joining.
+              </p>
+            )}
 
             {/* Show saved course info */}
             {selectedCourse && courseSelectValue !== "__new__" && (
@@ -950,8 +1093,11 @@ export default function NewRound() {
               </Card>
             )}
 
-            {/* Manual par / HCP overrides shown when a course IS selected */}
-            {selectedCourse && courseSelectValue !== "__new__" && (
+            {/* Manual par / HCP overrides shown when a course IS selected.
+                Hidden while joining: these come from the flight being joined,
+                and letting the joiner change them would leave the two
+                scorecards scoring different holes. */}
+            {selectedCourse && courseSelectValue !== "__new__" && !joinTarget && (
               <div className="space-y-4">
                 <div className="space-y-2">
                   <Label>Number of Holes</Label>
