@@ -67,6 +67,10 @@ const GAME_DEFS: GameDef[] = [
   { value: "best_ball", label: "Best Ball", desc: "Best score per team wins each hole.", minPlayers: 2, maxPlayers: 4, isTeam: false, canToggleTeam: true, teamVariant: "best_ball_pairs", indivVariant: "best_ball" },
   { value: "high_low", label: "High Low", desc: "Low score wins the hole.", minPlayers: 2, maxPlayers: 4, isTeam: false, canToggleTeam: true, teamVariant: "high_low_pairs", indivVariant: "high_low" },
   { value: "match_play_indiv", label: "Match Play", desc: "Hole-by-hole: lowest score wins. Teams supported.", minPlayers: 2, maxPlayers: 4, isTeam: false, canToggleTeam: true, teamVariant: "match_play", indivVariant: "match_play_indiv" },
+  { value: "stableford", label: "Stableford", desc: "Points vs net par: birdie 3, par 2, bogey 1.", minPlayers: 1, maxPlayers: 8, isTeam: false, canToggleTeam: false },
+  { value: "stableford_modified", label: "Modified Stableford", desc: "Bigger rewards for birdies, a penalty for doubles.", minPlayers: 1, maxPlayers: 8, isTeam: false, canToggleTeam: false },
+  { value: "quota", label: "Quota", desc: "Beat 36 minus your course handicap, scoring gross points.", minPlayers: 2, maxPlayers: 8, isTeam: false, canToggleTeam: false },
+  { value: "skins", label: "Skins", desc: "Outright low score wins the hole; a tie carries over.", minPlayers: 2, maxPlayers: 8, isTeam: false, canToggleTeam: false },
   { value: "niners", label: "Niners", desc: "3 players, 9 pts/hole: 5-3-1.", minPlayers: 3, maxPlayers: 3, isTeam: false, canToggleTeam: false },
   { value: "twelves", label: "Twelves", desc: "4 players, 12 pts/hole: 5-3-2-1.", minPlayers: 4, maxPlayers: 4, isTeam: false, canToggleTeam: false },
 ];
@@ -2071,6 +2075,8 @@ export default function Scorecard() {
             onClick={async () => {
               const def = GAME_DEFS.find(d => d.value === editGameType)!;
               let resolvedType = editGameType;
+              // A UI entry, not an engine type: same code, aggressive scale
+              if (editGameType === "stableford_modified") resolvedType = "stableford";
               if (def.canToggleTeam) {
                 resolvedType = editTeamMode === "team" ? (def.teamVariant ?? editGameType) : (def.indivVariant ?? editGameType);
               }
@@ -2082,12 +2088,18 @@ export default function Scorecard() {
                 ? editTeamAssignment
                 : undefined;
 
+              // Spread what is already there first. gameOptions is also where
+              // the round's notes, nineType and solo/ghost flags live, and
+              // rebuilding the object from scratch silently deleted all of
+              // them every time a game mode was applied.
               const gameOptions = JSON.stringify({
+                ...gameOpts,
                 scoringMode: editScoringMode,
                 ptsPerHole: editPtsPerHole,
                 pairsTiebreaker: editPairsTiebreaker,
                 secondScoreTiebreaker: editSecondScoreTiebreaker,
                 ...(ta ? { teamAssignment: ta } : {}),
+                modifiedStableford: editGameType === "stableford_modified",
               });
 
               updateGameMutation.mutate({ gameType: resolvedType, gameOptions });
