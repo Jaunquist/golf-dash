@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiRequest, getSession, countryName, normalizeCountry, flagEmoji, joinableRounds, newId } from "@/lib/queryClient";
+import { apiRequest, getSession, countryName, normalizeCountry, flagEmoji, joinableRounds, newId, todayISO } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -315,7 +315,9 @@ export default function NewRound() {
 
   // ── Ghost round state ────────────────────────────────────────────────────
   const [ghostEnabled, setGhostEnabled] = useState(false);
-  const [roundDate, setRoundDate] = useState(() => new Date().toISOString().slice(0, 10));
+  // Local calendar day, not the UTC one — see todayISO(). A 6am tee time was
+  // being filed under yesterday.
+  const [roundDate, setRoundDate] = useState(() => todayISO());
 
   /**
    * Joining an existing flight.
@@ -387,7 +389,7 @@ export default function NewRound() {
   // look available, so the format list counts only those playing
   const gamePlayers = players.filter(p => p.active && p.inGame !== false);
   const isSolo = activePlayers.length === 1;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayISO();
 
   function resolveGameType(): GameType {
     // A UI entry, not an engine type: same scoring code, aggressive scale
@@ -876,7 +878,12 @@ export default function NewRound() {
                     >
                       <div className="flex items-center gap-2">
                         <span className="text-xs font-semibold flex-1 truncate">
-                          {(r.owner_email || "").split("@")[0] || "Someone"}'s flight
+                          {/* Your own rounds are listed now, so they have to be
+                              named as yours rather than shown by email local
+                              part as though someone else had started them. */}
+                          {r.is_mine
+                            ? "Your earlier flight"
+                            : `${(r.owner_email || "").split("@")[0] || "Someone"}'s flight`}
                         </span>
                         <span className="text-[10px] text-muted-foreground">
                           {GAME_LABELS_SHORT[r.game_type] ?? r.game_type}
@@ -893,7 +900,9 @@ export default function NewRound() {
                 {joinTarget && (
                   <div className="rounded-lg bg-background/60 border border-accent/30 px-2.5 py-2 space-y-1">
                     <p className="text-[11px] font-semibold text-accent">
-                      Inherited from {(joinTarget.owner_email || "").split("@")[0] || "their"} flight
+                      Inherited from {joinTarget.is_mine
+                        ? "your earlier"
+                        : `${(joinTarget.owner_email || "").split("@")[0] || "their"}`} flight
                     </p>
                     <div className="text-[10px] text-muted-foreground leading-relaxed">
                       <div>Format · <span className="font-medium text-foreground">

@@ -446,10 +446,23 @@ function activityEnd() {
 
 export async function adminUsage(): Promise<any> { return call("usage", {}); }
 
-/** Active rounds at the same course today that this player could join. */
+/**
+ * Active rounds at the same course today that this player could join.
+ *
+ * Still returns [] on failure — a backend that is down or a deployment that
+ * predates this action must not stop you starting a round. But it logs first.
+ * Swallowing the error silently meant "no flight to join" and "the call threw"
+ * looked identical on screen, which is what made an empty list impossible to
+ * diagnose from the app: a stale Apps Script deployment answers this action
+ * with "Unknown action: joinableRounds" and that message was being discarded.
+ */
 export async function joinableRounds(courseName: string, date: string): Promise<any[]> {
-  try { return await call<any[]>("joinableRounds", { courseName, date }); }
-  catch { return []; }   // never block starting a round because this failed
+  try {
+    return await call<any[]>("joinableRounds", { courseName, date });
+  } catch (err) {
+    console.warn("[golf-dash] joinableRounds failed:", err);
+    return [];
+  }
 }
 
 /** Every flight in one event, with scores, for the combined leaderboard. */
@@ -556,6 +569,22 @@ if (typeof window !== "undefined") {
  * and re-formatting: the timestamp carries a UTC midnight-plus-offset that, in
  * Manila or Tokyo, would shift a round onto the wrong calendar day.
  */
+/**
+ * Today, on the calendar the player is standing on.
+ *
+ * new Date().toISOString().slice(0, 10) gives the UTC day, which is the
+ * previous day for any tee time before 08:00 in Manila or 09:00 in Japan — so
+ * a dawn round was being filed under yesterday. It also made joining a flight
+ * unreliable, because the UTC date rolls over mid-morning local time: two
+ * flights set up either side of 08:00 Manila would be stamped with different
+ * dates and would not find each other.
+ */
+export function todayISO(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 function toISODate(raw: unknown): string {
   const v = String(raw ?? "").trim();
   if (!v) return "";
@@ -1142,7 +1171,7 @@ async function createRound(payload: any): Promise<{ round: Round; players: Round
     courseName: String(src.courseName ?? ""),
     courseRating: src.courseRating ?? course?.courseRating ?? null,
     slopeRating: src.slopeRating ?? course?.slopeRating ?? null,
-    date: toISODate(src.date ?? new Date().toISOString().slice(0, 10)),
+    date: toISODate(src.date ?? todayISO()),
     eventId: src.eventId ? String(src.eventId) : null,
     holes: Number(src.holes) || 18,
     par: src.par ?? course?.par ?? null,
