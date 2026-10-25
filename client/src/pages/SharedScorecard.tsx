@@ -533,7 +533,9 @@ export default function SharedScorecard() {
     );
   }
 
-  const smShort: Record<string, string> = { net_auto: "Net/HCP", net_manual: "Net/Manual", gross: "Gross" };
+  // net_manual was removed from the picker; rounds saved with it scored
+  // identically to net_auto, so it carries the same badge here.
+  const smShort: Record<string, string> = { net_auto: "Net/HCP", net_manual: "Net/HCP", gross: "Gross" };
   const sm = gameOpts?.scoringMode ?? "net_auto";
 
   return (
