@@ -564,6 +564,12 @@ export const GAME_META: Record<GameType, {
                       blurb: "Outright low score wins the hole; ties carry the skin forward." },
   stableford:       { label: "Stableford", min: 1, max: 4,
                       blurb: "Points against net par, so one bad hole costs less." },
+  // Record<GameType, …> requires every key, and this one was missing: tsc
+  // flags it, esbuild does not, so the build stayed green while the type was
+  // a lie. Nothing reads GAME_META today — NewRound and Scorecard each carry
+  // their own GAME_DEFS — but an incomplete map is a trap for whatever does.
+  quota:            { label: "Quota", min: 1, max: 8,
+                      blurb: "Beat your own target of 36 minus your course handicap, scored gross." },
   solo_ghost:       { label: "Vs. Previous Round", min: 1, max: 1,
                       blurb: "Play against your own past round on this course." },
   solo_none:        { label: "Just Scoring", min: 1, max: 1,
