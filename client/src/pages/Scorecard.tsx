@@ -77,9 +77,12 @@ const GAME_DEFS: GameDef[] = [
 ];
 
 const SCORING_MODE_LABELS: Record<string, string> = {
-  net_auto:   "Net — by hole HCP",
-  net_manual: "Net — manual HCP",
-  gross:      "Gross (no handicap)",
+  net_auto: "Net — by hole HCP",
+  gross:    "Gross (no handicap)",
+  // net_manual is gone from the picker but lives on in rounds already saved
+  // with it. It always scored identically to net_auto, so it is labelled as
+  // net_auto rather than left to render an empty badge.
+  net_manual: "Net — by hole HCP",
 };
 
 // Returns color class based on team membership in team games, or per-player color otherwise
@@ -1437,7 +1440,11 @@ export default function Scorecard() {
                   const baseDef = GAME_DEFS.find(d => d.value === baseKey) ?? GAME_DEFS[0];
                   setEditGameType(baseDef.value);
                   setEditTeamMode(isTeamType ? "team" : "individual");
-                  setEditScoringMode(opts.scoringMode ?? "net_auto");
+                  // Anything that is not "gross" is net. A round saved under
+                  // the old net_manual would otherwise match no button and the
+                  // sheet would open with nothing selected, then save that
+                  // dead value straight back.
+                  setEditScoringMode(opts.scoringMode === "gross" ? "gross" : "net_auto");
                   setEditPtsPerHole(opts.ptsPerHole ?? 1);
                   setEditPairsTiebreaker(opts.pairsTiebreaker ?? false);
                   setEditSecondScoreTiebreaker(opts.secondScoreTiebreaker ?? false);
@@ -1467,7 +1474,10 @@ export default function Scorecard() {
             {/* Scoring mode badge */}
             {!isSoloRound && (() => {
               const sm = gameOpts?.scoringMode ?? "net_auto";
-              const smShort: Record<string, string> = { net_auto: "Net/HCP", net_manual: "Net/Manual", gross: "Gross" };
+              // net_manual maps to the same badge as net_auto: it always
+              // scored the same, so showing it as a distinct mode on an old
+              // round would imply a difference that never existed.
+              const smShort: Record<string, string> = { net_auto: "Net/HCP", net_manual: "Net/HCP", gross: "Gross" };
               return (
                 <Badge variant="outline" className="text-[10px] py-0 px-1.5 text-muted-foreground border-dashed">
                   {smShort[sm] ?? sm}
@@ -1881,9 +1891,8 @@ export default function Scorecard() {
             <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Scoring Mode</div>
             <div className="space-y-1.5">
               {([
-                { key: "net_auto",   label: "Net — by hole HCP",    desc: "Handicap strokes distributed across holes by difficulty ranking" },
-                { key: "net_manual", label: "Net — manual HCP",      desc: "Course handicap applied as a flat round reduction" },
-                { key: "gross",      label: "Gross (no handicap)",   desc: "Raw strokes only, no handicap applied" },
+                { key: "net_auto", label: "Net — by hole HCP",  desc: "Handicap strokes distributed across holes by difficulty ranking. Edit a player's course handicap to change what they get." },
+                { key: "gross",    label: "Gross (no handicap)", desc: "Raw strokes only, no handicap applied" },
               ] as const).map(({ key, label, desc }) => (
                 <button
                   key={key}

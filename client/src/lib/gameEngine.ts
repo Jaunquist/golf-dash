@@ -23,14 +23,22 @@ export type GameType =
 
 /**
  * scoringMode:
- *   "net_auto"   — subtract handicap strokes per hole (default, original behaviour)
- *   "net_manual" — each player's courseHandicap applied as a flat per-round reduction;
- *                  the engine still uses handicapStrokesOnHole() so it distributes the
- *                  manual hcp across holes in the standard way (identical to net_auto for
- *                  1×18 courses). Stored so UI can label it differently.
- *   "gross"      — use raw strokes, no handicap applied
+ *   "net_auto" — subtract handicap strokes per hole, distributed by stroke index
+ *   "gross"    — use raw strokes, no handicap applied
+ *
+ * There was a third, "net_manual", offered as "Net — manual HCP". It claimed
+ * to apply the course handicap as a flat round reduction, but it reached the
+ * same handicapStrokesOnHole() distribution as net_auto and so produced
+ * byte-identical results on every round ever played. It was a third choice
+ * that changed nothing — and since a course handicap can be edited directly
+ * per player, it never had a job net_auto could not do. Removed.
+ *
+ * Rounds saved before this still carry scoringMode: "net_manual" in their
+ * stored gameOptions. Nothing migrates them: the normalisation below treats
+ * anything that is not "gross" as net, which is exactly what those rounds
+ * already did, so their scores do not move by a single point.
  */
-export type ScoringMode = "net_auto" | "net_manual" | "gross";
+export type ScoringMode = "net_auto" | "gross";
 
 export interface GameOptions {
   // Scoring
@@ -144,8 +152,11 @@ function playingScore(
   totalHoles: number,
   mode: ScoringMode
 ): number {
+  // Tested against "gross" rather than for "net_auto" on purpose: this is what
+  // makes the removal of net_manual a no-op for rounds already saved with it.
+  // Any unrecognised or legacy mode falls through to net, which is what every
+  // one of those rounds was already scored as.
   if (mode === "gross") return gross;
-  // net_auto and net_manual both use handicap-distributed strokes
   return netScore(gross, courseHandicap, holeHcpRank, totalHoles);
 }
 
