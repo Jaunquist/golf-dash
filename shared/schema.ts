@@ -37,6 +37,9 @@ export const rounds = sqliteTable("rounds", {
   // Who started this round. Only they (or an admin) may write to it — which is
   // what lets two flights score simultaneously without overwriting each other.
   ownerEmail: text("owner_email"),
+  // Flights of one game share an event id. Two rounds with the same eventId
+  // are one game played in two groups; the combined leaderboard reads both.
+  eventId: text("event_id"),
 });
 
 export const insertRoundSchema = createInsertSchema(rounds).omit({ id: true });
