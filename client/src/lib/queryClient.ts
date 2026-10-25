@@ -962,7 +962,6 @@ function refreshRemoteRounds(): void {
         gameOptions: String(r.game_options || "{}"),
         status: String(r.status || "complete"),
         ownerEmail: r.owner_email ? String(r.owner_email) : null,
-    eventId: r.event_id ? String(r.event_id) : null,
         eventId: r.event_id ? String(r.event_id) : null,
         pars: String(r.pars || "[]"),
         holeHandicaps: String(r.hole_handicaps || "[]"),
