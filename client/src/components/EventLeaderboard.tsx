@@ -40,7 +40,26 @@ import {
   type GameType,
   type GameOptions,
 } from "@/lib/gameEngine";
-import { Trophy, Users, Info, RefreshCw } from "lucide-react";
+import { Link } from "wouter";
+import { Trophy, Users, Info, RefreshCw, ExternalLink } from "lucide-react";
+
+/**
+ * One colour per flight, used on the flight tag beside a player's name and on
+ * the progress line, so a row can be traced to a group at a glance.
+ *
+ * Hue, not just shade: these have to survive being read on a phone in daylight
+ * and stay apart for the red-green colour blind, which rules out the obvious
+ * red/green pairing. Blue and amber separate under every common form of it.
+ * The colour is never the only carrier — the flight number is always written
+ * next to it.
+ */
+const FLIGHT_COLORS = [
+  { text: "text-sky-700 dark:text-sky-400",     dot: "bg-sky-600" },
+  { text: "text-amber-700 dark:text-amber-500", dot: "bg-amber-600" },
+  { text: "text-violet-700 dark:text-violet-400", dot: "bg-violet-600" },
+  { text: "text-teal-700 dark:text-teal-400",   dot: "bg-teal-600" },
+];
+const flightColor = (i: number) => FLIGHT_COLORS[i % FLIGHT_COLORS.length];
 
 /** Formats whose standings are per player and pool across the whole field. */
 const POOLED_INDIVIDUAL: GameType[] = ["stableford", "quota", "skins"];
@@ -229,13 +248,40 @@ export default function EventLeaderboard({
       return n;
     })();
 
-    const perFlight = flights.map((_, flightIdx) => {
+    const perFlight = flights.map((f, flightIdx) => {
       const ids = pooled.filter(p => p.flightIdx === flightIdx).map(p => String(p.g.id));
-      let n = 0;
+
+      /**
+       * Holes complete, and which hole the group is standing on.
+       *
+       * Both fall out of one pass. A hole is complete when every player in
+       * that flight has a stroke on it; it is partial when some do and some
+       * do not. The current hole is the first that is not complete, which
+       * satisfies both halves of the rule at once — a partially filled hole
+       * is itself the current one, and when the last filled hole is complete
+       * the first incomplete one is the next hole along.
+       *
+       * Counting complete holes rather than any-input holes is what keeps
+       * "12/18" honest: a flight that has entered one player's score on the
+       * 13th has not played 13 holes.
+       */
+      let complete = 0;
+      let current: number | null = null;
       for (let h = 1; h <= holes; h++) {
-        if (ids.length && ids.every(id => grossScores[id]?.[h] != null)) n++;
+        const filled = ids.filter(id => grossScores[id]?.[h] != null).length;
+        if (ids.length && filled === ids.length) complete++;
+        else if (current == null) current = h;
       }
-      return { label: `Flight ${flightIdx + 1}`, holes: n };
+
+      return {
+        label: `Flight ${flightIdx + 1}`,
+        idx: flightIdx,
+        roundId: String(f.round?.id ?? ""),
+        isHere: String(f.round?.id ?? "") === String(currentRoundId),
+        holes: complete,
+        // null once every hole is complete — the group has finished.
+        current,
+      };
     });
 
     if (isTeam) {
@@ -244,11 +290,16 @@ export default function EventLeaderboard({
        * total is the points won, not points × team size. Individual numbers
        * are therefore meaningless here and only the team sum is shown.
        */
-      const byTeam = new Map<number, { team: number; points: number; names: string[] }>();
+      const byTeam = new Map<
+        number,
+        { team: number; points: number; members: { name: string; flightIdx: number }[] }
+      >();
       pooled.forEach(p => {
-        const cur = byTeam.get(p.team) ?? { team: p.team, points: 0, names: [] };
+        const cur = byTeam.get(p.team) ?? { team: p.team, points: 0, members: [] };
         cur.points += totals[p.g.id as unknown as number] ?? 0;
-        cur.names.push(`${firstName(p.g.name)} (F${p.flightIdx + 1})`);
+        // Kept structured rather than pre-joined so each member can carry its
+        // own flight colour when rendered.
+        cur.members.push({ name: firstName(p.g.name), flightIdx: p.flightIdx });
         byTeam.set(p.team, cur);
       });
       const rows = [...byTeam.values()].sort((a, b) => b.points - a.points);
@@ -263,6 +314,7 @@ export default function EventLeaderboard({
           id: String(p.g.id),
           name: p.g.name,
           flightLabel: p.flightLabel,
+          flightIdx: p.flightIdx,
           isHere: p.roundId === String(currentRoundId),
           points: pts,
           target,
@@ -337,8 +389,16 @@ export default function EventLeaderboard({
                         <Users className="h-3 w-3 text-muted-foreground shrink-0" />
                         <span className="text-sm font-medium truncate">Team {r.team}</span>
                       </div>
-                      <div className="text-[10px] text-muted-foreground truncate mt-0.5">
-                        {r.names.join(" · ")}
+                      <div className="text-[10px] truncate mt-0.5">
+                        {r.members.map((m, mi) => (
+                          <span key={`${m.name}-${mi}`}>
+                            {mi > 0 && <span className="text-muted-foreground/50"> · </span>}
+                            <span className="text-muted-foreground">{m.name}</span>
+                            <span className={`ml-0.5 ${flightColor(m.flightIdx).text}`}>
+                              F{m.flightIdx + 1}
+                            </span>
+                          </span>
+                        ))}
                       </div>
                     </div>
                     <span className="text-sm font-semibold tabular-nums shrink-0">{r.points}</span>
@@ -356,8 +416,18 @@ export default function EventLeaderboard({
                     </span>
                     <div className="min-w-0 flex-1">
                       <span className="text-sm font-medium truncate">{r.name}</span>
-                      <span className="text-[10px] text-muted-foreground ml-1.5">
+                      {/* Flight tag carries the colour, but the number is
+                          always written out so colour is never load-bearing
+                          on its own. The hole count rides along in a smaller
+                          size so a leader who is simply further round the
+                          course is obvious. */}
+                      <span
+                        className={`text-[10px] font-medium ml-1.5 ${flightColor(r.flightIdx).text}`}
+                      >
                         {r.flightLabel}
+                      </span>
+                      <span className="text-[9px] text-muted-foreground/70 ml-1 tabular-nums">
+                        {board.perFlight[r.flightIdx]?.holes ?? 0}/{holes}
                       </span>
                     </div>
                     {r.target == null ? (
@@ -375,19 +445,49 @@ export default function EventLeaderboard({
                 ))}
           </div>
 
-          <div className="px-4 py-2.5 border-t border-border/60 space-y-1">
-            <p className="text-[10px] text-muted-foreground/80 leading-snug">
+          <div className="px-4 py-2.5 border-t border-border/60 space-y-1.5">
+            {/*
+              One line per flight: how far round it is, which hole it is on,
+              and a way into its scorecard. The flight you are scoring links
+              nowhere — you are already on it — and the other flight opens
+              read-only, which is the same view its share link gives.
+            */}
+            {board.perFlight.map(f => (
+              <div key={f.idx} className="flex items-center gap-1.5 text-[10px] leading-snug">
+                <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${flightColor(f.idx).dot}`} />
+                <span className={`font-medium ${flightColor(f.idx).text}`}>{f.label}</span>
+                <span className="text-muted-foreground/80 tabular-nums">
+                  {f.holes}/{holes}
+                </span>
+                <span className="text-muted-foreground/80">
+                  {f.current == null ? "· finished" : `· on hole ${f.current}`}
+                </span>
+                {f.isHere ? (
+                  <span className="text-muted-foreground/50 ml-auto shrink-0">you</span>
+                ) : (
+                  <Link
+                    href={`/shared/${f.roundId}`}
+                    className="ml-auto shrink-0 inline-flex items-center gap-0.5
+                               text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    Scorecard <ExternalLink className="h-2.5 w-2.5" />
+                  </Link>
+                )}
+              </div>
+            ))}
+
+            <p className="text-[10px] text-muted-foreground/70 leading-snug pt-0.5">
               {/*
                 Field-wide formats are gated by the slowest group, so the
                 binding number is the one every player has posted. Per-player
-                formats are not, so quoting that number there would understate
-                a flight that has finished.
+                formats need no such line — the per-flight rows above already
+                say how far each group has got.
               */}
               {WAITS_FOR_FIELD.includes(gameType as GameType)
-                ? `${board.settled} of ${holes} holes settled`
-                : board.perFlight.map(f => `${f.label}: ${f.holes}`).join(" · ") +
-                  ` of ${holes} holes`}
-              {lastUpdated ? ` · last save ${sinceLabel(new Date(lastUpdated).toISOString())}` : ""}
+                ? `${board.settled} of ${holes} holes settled across both flights`
+                : ""}
+              {WAITS_FOR_FIELD.includes(gameType as GameType) && lastUpdated ? " · " : ""}
+              {lastUpdated ? `last save ${sinceLabel(new Date(lastUpdated).toISOString())}` : ""}
             </p>
             {WAITS_FOR_FIELD.includes(gameType as GameType) && (
               <p className="text-[10px] text-muted-foreground/70 leading-snug flex gap-1.5">
