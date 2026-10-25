@@ -71,9 +71,6 @@ export default function SharedScorecard() {
   const [activeCell, setActiveCell] = useState<{ playerId: string; hole: number } | null>(null);
   const cellFocusRef = useRef<Record<string, boolean>>({});
 
-  // Leaving an open cell behind when rights are lost would let a stale input save
-  useEffect(() => { if (readOnly) { setActiveCell(null); setPending({}); } }, [readOnly]);
-
   const { data, isLoading } = useQuery<{ round: Round; players: RoundPlayer[]; scores: HoleScore[] }>({
     queryKey: ["/api/rounds", roundId],
     queryFn: async () => {
@@ -84,7 +81,18 @@ export default function SharedScorecard() {
 
   // Signed in is not the same as allowed: a shared link to someone else's
   // round stays read-only even for an account holder.
+  //
+  // This has to sit below the query: it reads `data`, and the effect that
+  // depends on it has to sit below this. Declaring the effect first was a
+  // temporal-dead-zone read — `const` is not hoisted, so the render threw
+  // "Cannot access 'readOnly' before initialization" before anything drew.
   const readOnly = !canEditRound(data?.round as any);
+
+  // Losing edit rights mid-session must not leave an open cell behind, or a
+  // stale input could still save
+  useEffect(() => {
+    if (readOnly) { setActiveCell(null); setPending({}); }
+  }, [readOnly]);
 
   const gameOptsRaw = data?.round ? JSON.parse(data.round.gameOptions) : {};
   const isSoloGhost = gameOptsRaw?.solo === true && gameOptsRaw?.ghost === true;
