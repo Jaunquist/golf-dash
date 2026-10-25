@@ -322,6 +322,7 @@ export interface RosterPlayer {
 }
 export interface Round {
   id: string; courseId: string | null; courseName: string; ownerEmail?: string | null;
+  eventId?: string | null;
   courseRating: number | null; slopeRating: number | null; date: string;
   holes: number; par: number | null; gameType: string; gameOptions: string;
   status: string; pars?: string; holeHandicaps?: string;
@@ -445,6 +446,17 @@ function activityEnd() {
 
 export async function adminUsage(): Promise<any> { return call("usage", {}); }
 
+/** Active rounds at the same course today that this player could join. */
+export async function joinableRounds(courseName: string, date: string): Promise<any[]> {
+  try { return await call<any[]>("joinableRounds", { courseName, date }); }
+  catch { return []; }   // never block starting a round because this failed
+}
+
+/** Every flight in one event, with scores, for the combined leaderboard. */
+export async function eventRounds(eventId: string): Promise<any> {
+  return call("eventRounds", { eventId });
+}
+
 async function call<T>(action: string, payload: unknown = {}, timeoutMs = CALL_TIMEOUT_MS): Promise<T> {
   const cfg = ensureConfig();
   // Without this a stalled request leaves the UI on skeletons forever
@@ -563,6 +575,7 @@ function toSheetRound(r: Round) {
     game_options: r.gameOptions, pars: r.pars ?? "[]",
     hole_handicaps: r.holeHandicaps ?? "[]", status: r.status,
     owner_email: (r as any).ownerEmail ?? "",
+    event_id: (r as any).eventId ?? "",
   };
 }
 
@@ -949,6 +962,8 @@ function refreshRemoteRounds(): void {
         gameOptions: String(r.game_options || "{}"),
         status: String(r.status || "complete"),
         ownerEmail: r.owner_email ? String(r.owner_email) : null,
+    eventId: r.event_id ? String(r.event_id) : null,
+        eventId: r.event_id ? String(r.event_id) : null,
         pars: String(r.pars || "[]"),
         holeHandicaps: String(r.hole_handicaps || "[]"),
       }));
@@ -1029,6 +1044,7 @@ function fromPublicRound(id: string, pub: any) {
     gameOptions: String(r.game_options || "{}"),
     status: String(r.status || "complete"),
     ownerEmail: r.owner_email ? String(r.owner_email) : null,
+    eventId: r.event_id ? String(r.event_id) : null,
     pars: String(r.pars || "[]"),
     holeHandicaps: String(r.hole_handicaps || "[]"),
   };
@@ -1079,6 +1095,7 @@ async function load(id: string): Promise<Stored | null> {
       gameType: String(r.round.game_type), gameOptions: String(r.round.game_options || "{}"),
       status: String(r.round.status || "active"),
       ownerEmail: r.round.owner_email ? String(r.round.owner_email) : null,
+      eventId: r.round.event_id ? String(r.round.event_id) : null,
       pars: String(r.round.pars || "[]"), holeHandicaps: String(r.round.hole_handicaps || "[]"),
     };
     const players: RoundPlayer[] = [];
@@ -1127,6 +1144,7 @@ async function createRound(payload: any): Promise<{ round: Round; players: Round
     courseRating: src.courseRating ?? course?.courseRating ?? null,
     slopeRating: src.slopeRating ?? course?.slopeRating ?? null,
     date: toISODate(src.date ?? new Date().toISOString().slice(0, 10)),
+    eventId: src.eventId ? String(src.eventId) : null,
     holes: Number(src.holes) || 18,
     par: src.par ?? course?.par ?? null,
     gameType: String(src.gameType ?? "best_ball"),
