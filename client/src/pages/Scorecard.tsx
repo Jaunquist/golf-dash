@@ -18,6 +18,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, CheckCircle2, Users, Trash2, UserPlus, Download, Ghost, Pencil, Link2, Share2, StickyNote } from "lucide-react";
 import { ReadOnlyBar } from "@/components/AuthGate";
+import EventLeaderboard from "@/components/EventLeaderboard";
 import { canEditRound, onAuthChange } from "@/lib/queryClient";
 import {
   computeGameResults, cumulativeTotals, scoreCssClass, handicapStrokesOnHole,
@@ -1654,6 +1655,26 @@ export default function Scorecard() {
           <h2 className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wider">Round Totals</h2>
           {renderTotals()}
         </div>
+
+        {/*
+          Combined standings across the flights of this game.
+
+          Renders nothing at all unless a second flight actually joined this
+          event, which is the common case: every round mints an event id on
+          creation so that a flight CAN join later, so an event id by itself
+          says nothing about whether one did.
+        */}
+        {round.eventId && (
+          <EventLeaderboard
+            eventId={String(round.eventId)}
+            currentRoundId={String(round.id)}
+            gameType={round.gameType}
+            gameOptions={gameOpts}
+            pars={pars}
+            holeHandicaps={holeHcps}
+            holes={holes}
+          />
+        )}
 
         {/* Notes — saved with the round, synced to the sheet */}
         <div>
