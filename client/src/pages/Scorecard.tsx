@@ -16,7 +16,7 @@ import {
   SheetDescription,
 } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, CheckCircle2, Users, Trash2, UserPlus, Download, Ghost, Pencil, Link2, Share2, StickyNote } from "lucide-react";
+import { ArrowLeft, CheckCircle2, Users, Trash2, UserPlus, Download, Ghost, Pencil, Link2, Share2, StickyNote, ChevronRight } from "lucide-react";
 import { ReadOnlyBar } from "@/components/AuthGate";
 import EventLeaderboard from "@/components/EventLeaderboard";
 import { canEditRound, onAuthChange } from "@/lib/queryClient";
@@ -195,6 +195,60 @@ export default function Scorecard() {
       })
       .catch(() => toast({ title: "Couldn't save notes", variant: "destructive" }));
   }, [data?.round, notes, roundId]);
+
+  /**
+   * Per-hole comments and the toggle that shows them.
+   *
+   * VERIFY: hole-notes-in-gameoptions
+   *
+   * Both live inside gameOptions rather than in columns of their own. That is
+   * not laziness — gameOptions is already a JSON blob that round notes use, so
+   * this needs no header change, and adding a column to App_Rounds is exactly
+   * the operation that re-labelled every Courses column one position right and
+   * turned stroke indexes into pars. Eighteen sparse comments are a map, and a
+   * map belongs in the blob the round already carries.
+   *
+   * Written through the same PATCH as the round notes, which means it inherits
+   * the local-first path: IndexedDB first, Sheet in the background. Leaving the
+   * page, closing the app, or being on a course with no signal all survive it.
+   */
+  const holeNotes: Record<string, string> = gameOptsRaw?.holeNotes ?? {};
+  const notesEnabled: boolean = gameOptsRaw?.notesEnabled === true;
+
+  const patchGameOptions = useCallback((mutate: (cur: any) => any) => {
+    if (!data?.round) return Promise.resolve();
+    const current = JSON.parse(data.round.gameOptions || "{}");
+    // Spread, never rebuild. Rebuilding this object from scratch is what
+    // silently deleted the round notes when the game mode was reapplied.
+    const next = mutate({ ...current });
+    return apiRequest("PATCH", `/api/rounds/${roundId}/game`, {
+      gameType: data.round.gameType,
+      gameOptions: JSON.stringify(next),
+    })
+      .then(() => { qc.invalidateQueries({ queryKey: [`/api/rounds/${roundId}`] }); })
+      .catch(() => toast({ title: "Couldn't save", variant: "destructive" }));
+  }, [data?.round, roundId]);
+
+  const saveHoleNote = useCallback((hole: number, text: string) => {
+    const trimmed = String(text ?? "").trim().slice(0, 200);
+    if ((holeNotes[String(hole)] ?? "") === trimmed) return;
+    patchGameOptions(cur => {
+      const map = { ...(cur.holeNotes ?? {}) };
+      // An emptied note is removed rather than stored as "", so a hole either
+      // has something to say or is absent from the map entirely.
+      if (trimmed) map[String(hole)] = trimmed;
+      else delete map[String(hole)];
+      return { ...cur, holeNotes: map };
+    });
+  }, [holeNotes, patchGameOptions]);
+
+  const toggleNotesEnabled = useCallback(() => {
+    patchGameOptions(cur => ({ ...cur, notesEnabled: !(cur.notesEnabled === true) }));
+  }, [patchGameOptions]);
+
+  // Purely a view preference, so it stays local — collapsing the row on one
+  // phone should not collapse it on the other flight's.
+  const [notesRowOpen, setNotesRowOpen] = useState(false);
   const isSoloGhost = gameOptsRaw?.solo === true && gameOptsRaw?.ghost === true;
   const { data: ghostData } = useQuery<{ scores: Record<number, { strokes: number; roundDate: string }>; roundCount: number }>({
     queryKey: ["/api/courses", data?.round?.courseId, "ghost"],
@@ -394,8 +448,14 @@ export default function Scorecard() {
   // Save handler called by sheet on save/next/close
   const handleSheetSave = useCallback((hole: number, entry: HoleEntry) => {
     if (sheetPlayerId === null) return;
-    saveMutation.mutate({ playerId: sheetPlayerId, hole, ...entry });
-  }, [sheetPlayerId, saveMutation]);
+    // The note belongs to the hole, not to this player's score row, so it is
+    // peeled off here and saved to the round. undefined means the sheet had
+    // comments switched off or the viewer could not write one — in that case
+    // whatever is stored is left exactly as it is.
+    const { note, ...score } = entry;
+    saveMutation.mutate({ playerId: sheetPlayerId, hole, ...score });
+    if (note !== undefined) saveHoleNote(hole, note);
+  }, [sheetPlayerId, saveMutation, saveHoleNote]);
 
   const handleSheetDelete = useCallback((hole: number) => {
     if (sheetPlayerId === null) return;
@@ -530,7 +590,19 @@ export default function Scorecard() {
                     className={`text-center px-1 py-2 font-semibold w-10
                       landscape:w-auto landscape:px-0 landscape:py-1.5 ${
                       hi % 2 === 1 ? "bg-primary/[0.06]" : ""}`}>
-                  <div>{holeLabel(h)}</div>
+                  <div className="relative">
+                    {holeLabel(h)}
+                    {/* A hole carrying a note is marked here rather than in a
+                        row of its own: a 200-character comment in a 40px cell
+                        is unreadable, so the grid says "there is something to
+                        read" and the panel below says what. */}
+                    {notesEnabled && holeNotes[String(h)] && (
+                      <span
+                        className="absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full bg-accent"
+                        aria-label="has a note"
+                      />
+                    )}
+                  </div>
                   <div className="text-muted-foreground font-normal">{pars[h-1]}</div>
                   <div className="text-[9px] text-muted-foreground/60 font-normal">H{holeHcps[h-1]}</div>
                 </th>
@@ -1686,6 +1758,74 @@ export default function Scorecard() {
           />
         )}
 
+        {/*
+          Hole notes.
+
+          Collapsed by default and switchable off entirely, because the common
+          case is wanting to score and nothing else. With notes off, the hole
+          sheet loses its comment field and the grid loses its dots, so the
+          app is exactly what it was before this existed.
+        */}
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <button
+              onClick={() => setNotesRowOpen(o => !o)}
+              className="flex items-center gap-1.5 text-xs font-semibold uppercase
+                         tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+              disabled={!notesEnabled}
+            >
+              <ChevronRight
+                size={12}
+                className={`transition-transform ${notesRowOpen ? "rotate-90" : ""}`}
+              />
+              Hole notes
+              {notesEnabled && Object.keys(holeNotes).length > 0 && (
+                <span className="text-[10px] font-normal normal-case text-muted-foreground/70 tabular-nums">
+                  {Object.keys(holeNotes).length}
+                </span>
+              )}
+            </button>
+
+            {!readOnly && (
+              <button
+                onClick={toggleNotesEnabled}
+                className={`ml-auto text-[10px] px-2 py-1 rounded-lg font-medium transition-colors ${
+                  notesEnabled
+                    ? "bg-accent/15 text-accent"
+                    : "bg-muted/60 text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                {notesEnabled ? "Notes on" : "Notes off"}
+              </button>
+            )}
+          </div>
+
+          {notesEnabled && notesRowOpen && (
+            Object.keys(holeNotes).length === 0 ? (
+              <p className="text-xs text-muted-foreground/70 leading-snug">
+                No notes yet. Tap any hole and add one at the bottom of the sheet.
+              </p>
+            ) : (
+              <div className="rounded-xl border border-border bg-card divide-y divide-border/60">
+                {Object.keys(holeNotes)
+                  .map(Number)
+                  .filter(h => h >= 1 && h <= holes)
+                  .sort((a, b) => a - b)
+                  .map(h => (
+                    <div key={h} className="flex gap-3 px-3 py-2">
+                      <span className="text-[11px] font-semibold text-accent shrink-0 w-8 tabular-nums">
+                        {holeLabel(h)}
+                      </span>
+                      <span className="text-xs text-muted-foreground leading-snug flex-1 min-w-0">
+                        {holeNotes[String(h)]}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            )
+          )}
+        </div>
+
         {/* Notes — saved with the round, synced to the sheet */}
         <div>
           <h2 className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wider flex items-center gap-1.5">
@@ -2180,6 +2320,11 @@ export default function Scorecard() {
             initialPenalties={stored?.penalties ?? null}
             initialFairway={(stored?.fairway as FairwayResult | null) ?? null}
             initialMishit={stored?.mishit ? true : false}
+            initialNote={holeNotes[String(sheetHole)] ?? ""}
+            notesEnabled={notesEnabled}
+            // Writing a comment is writing to the round, so it follows the
+            // round's own permission rather than inventing a second one.
+            canComment={!readOnly}
             onSave={handleSheetSave}
             onDelete={handleSheetDelete}
             onClose={() => setSheetOpen(false)}
