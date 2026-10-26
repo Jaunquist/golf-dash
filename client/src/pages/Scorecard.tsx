@@ -19,7 +19,9 @@ import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, CheckCircle2, Users, Trash2, UserPlus, Download, Ghost, Pencil, Link2, Share2, StickyNote, ChevronRight } from "lucide-react";
 import { ReadOnlyBar } from "@/components/AuthGate";
 import EventLeaderboard from "@/components/EventLeaderboard";
-import { canEditRound, onAuthChange } from "@/lib/queryClient";
+import SummaryPanel from "@/components/SummaryPanel";
+import type { FactSheetInput } from "@/lib/roundFacts";
+import { canEditRound, onAuthChange, isAdmin } from "@/lib/queryClient";
 import {
   computeGameResults, cumulativeTotals, scoreCssClass, handicapStrokesOnHole,
   type Player as GPlayer
@@ -429,6 +431,10 @@ export default function Scorecard() {
   // Edit rights now depend on the round, not just on being signed in: a round
   // belongs to whoever started it, and the backend refuses anyone else.
   const readOnly = !canEditRound(data?.round as any);
+  // Read through the same tick as readOnly. A session token minted before the
+  // role existed reported the wrong answer until a reload once before, which
+  // is why this is derived per render rather than captured once.
+  const admin = isAdmin();
   void authTick;   // re-evaluated on every sign-in change
 
   const openSheet = useCallback((playerId: string, hole: number) => {
@@ -1825,6 +1831,50 @@ export default function Scorecard() {
             )
           )}
         </div>
+
+        {/*
+          Written summary. Admin only — this is the one action that spends
+          money on an external API. The fact sheet is built at generate time,
+          not here, so it always reflects the scores as they stand.
+        */}
+        <SummaryPanel
+          canGenerate={admin && !readOnly}
+          holes={holes}
+          holeLabel={holeLabel}
+          buildInput={(from, to): FactSheetInput => {
+            const byPlayer: FactSheetInput["scores"] = {};
+            players.forEach(p => {
+              byPlayer[p.id] = {};
+              for (let h = 1; h <= holes; h++) {
+                const s = scoreLookup[`${p.id}_${h}`];
+                byPlayer[p.id][h] = {
+                  strokes: s?.strokes ?? null,
+                  putts: s?.putts ?? null,
+                  penalties: s?.penalties ?? null,
+                  fairway: (s?.fairway as string) ?? null,
+                  mishit: s?.mishit ?? null,
+                };
+              }
+            });
+            return {
+              courseName: round.courseName,
+              date: round.date,
+              gameType: round.gameType,
+              gameOptions: gameOpts,
+              holes, pars, holeHandicaps: holeHcps, holeLabel,
+              players: players.map(p => ({
+                id: p.id, name: p.name,
+                courseHandicap: p.courseHandicap,
+                inGame: (p as any).inGame,
+              })),
+              scores: byPlayer,
+              holeResults,
+              holeNotes,
+              from, to,
+              gameLabel: GAME_LABELS[round.gameType] ?? round.gameType,
+            };
+          }}
+        />
 
         {/* Notes — saved with the round, synced to the sheet */}
         <div>
