@@ -1841,6 +1841,17 @@ export default function Scorecard() {
           canGenerate={admin && !readOnly}
           holes={holes}
           holeLabel={holeLabel}
+          stored={gameOpts?.summary ?? null}
+          onStore={s => patchGameOptions(cur => ({ ...cur, summary: s }))}
+          // Holes every player has posted. Used only to notice that a stored
+          // summary has been overtaken by more scoring.
+          holesComplete={(() => {
+            let n = 0;
+            for (let h = 1; h <= holes; h++) {
+              if (players.every(p => scoreLookup[`${p.id}_${h}`]?.strokes != null)) n++;
+            }
+            return n;
+          })()}
           buildInput={(from, to): FactSheetInput => {
             const byPlayer: FactSheetInput["scores"] = {};
             players.forEach(p => {
