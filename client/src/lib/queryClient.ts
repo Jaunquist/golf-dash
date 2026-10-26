@@ -470,6 +470,20 @@ export async function eventRounds(eventId: string): Promise<any> {
   return call("eventRounds", { eventId });
 }
 
+/**
+ * Send a fact sheet to Apps Script and get prose back.
+ *
+ * Deliberately not caught: this one costs money and takes ten seconds, so a
+ * failure has to surface as a message the user can act on — no key set, rate
+ * limited, model retired — rather than quietly producing nothing. Generous
+ * timeout because an LLM round trip is far slower than a sheet write.
+ */
+export async function generateSummary(facts: string, system: string): Promise<{
+  text: string; provider: string; model: string; generatedAt: string;
+}> {
+  return call("generateSummary", { facts, system }, 120_000);
+}
+
 async function call<T>(action: string, payload: unknown = {}, timeoutMs = CALL_TIMEOUT_MS): Promise<T> {
   const cfg = ensureConfig();
   // Without this a stalled request leaves the UI on skeletons forever
