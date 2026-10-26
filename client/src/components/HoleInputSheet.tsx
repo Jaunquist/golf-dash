@@ -17,7 +17,35 @@ export interface HoleEntry {
   penalties: number;
   fairway: FairwayResult | null;
   mishit: boolean;
+  /**
+   * A note about the HOLE, not about this player.
+   *
+   * The sheet opens from one player's cell, but a hole has one note shared by
+   * the group — four notes per hole is friction nobody absorbs mid-round, and
+   * the interesting remark is almost always about the hole anyway. Whichever
+   * cell you opened, you are editing the same text.
+   *
+   * undefined means "this build has comments switched off, leave whatever is
+   * stored alone" — distinct from "" which means the user cleared it.
+   */
+  note?: string;
 }
+
+/** Keeps a comment to something a sheet cell and a prompt can both carry. */
+export const NOTE_MAX = 200;
+
+/**
+ * Taps instead of typing.
+ *
+ * These cover only what the scorecard cannot already infer. There is no
+ * "3-putt" chip because putts are recorded, and no "penalty" chip because the
+ * count is — what is missing is WHICH kind, which is why water and OB are
+ * here and a bare "penalty" is not.
+ */
+const NOTE_CHIPS = [
+  "water", "OB", "trees", "bunker", "lipped out",
+  "great recovery", "conceded", "lost ball",
+];
 
 interface HoleInputSheetProps {
   open: boolean;
@@ -34,6 +62,12 @@ interface HoleInputSheetProps {
   initialPenalties?: number | null;
   initialFairway?: FairwayResult | null;
   initialMishit?: boolean | null;
+  /** Current note for this hole. Undefined when comments are switched off. */
+  initialNote?: string | null;
+  /** False hides the comment block entirely — "I just want to score". */
+  notesEnabled?: boolean;
+  /** Only the round owner may write; everyone else sees it read-only. */
+  canComment?: boolean;
   onSave: (hole: number, entry: HoleEntry) => void;
   onDelete: (hole: number) => void;        // reset / clear this hole's score
   onClose: () => void;                     // close WITHOUT saving
@@ -141,6 +175,9 @@ export default function HoleInputSheet({
   initialPenalties,
   initialFairway,
   initialMishit,
+  initialNote,
+  notesEnabled = false,
+  canComment = false,
   onSave,
   onDelete,
   onClose,
@@ -153,6 +190,7 @@ export default function HoleInputSheet({
   const [fairway, setFairway] = useState<FairwayResult | null>(initialFairway ?? null);
   const [mishit, setMishit] = useState<boolean>(!!initialMishit);
   const [puttWarn, setPuttWarn] = useState(false);
+  const [note, setNote] = useState<string>(initialNote ?? "");
 
   // A par 3 has no tee shot to a fairway, so the control does not appear there
   const hasFairway = par >= 4;
@@ -164,8 +202,10 @@ export default function HoleInputSheet({
     setPenalties(initialPenalties ?? 0);
     setFairway(initialFairway ?? null);
     setMishit(!!initialMishit);
+    setNote(initialNote ?? "");
     setPuttWarn(false);
-  }, [hole, initialStrokes, initialPutts, initialPenalties, initialFairway, initialMishit, par]);
+  }, [hole, initialStrokes, initialPutts, initialPenalties, initialFairway,
+      initialMishit, initialNote, par]);
 
   const entry = (): HoleEntry => ({
     strokes,
@@ -173,6 +213,9 @@ export default function HoleInputSheet({
     penalties,
     fairway: hasFairway ? fairway : null,
     mishit: hasFairway ? mishit : false,
+    // Left undefined when this user cannot write a note, so a read-only
+    // viewer saving a score cannot blank out the owner's comment.
+    note: canComment ? note.slice(0, NOTE_MAX) : undefined,
   });
 
   const handlePuttsInc = () => {
@@ -369,6 +412,79 @@ export default function HoleInputSheet({
                 </div>
               )}
             </div>
+
+            {/*
+              Hole note.
+              Deliberately last: strokes and putts are the job, this is the
+              optional extra. Hidden entirely when notes are switched off, so
+              a round you just want to score looks exactly as it did before.
+            */}
+            {notesEnabled && (
+              <div className="mt-4 pt-3 border-t border-border/40 space-y-2">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-[11px] font-semibold text-muted-foreground">
+                    Note for hole {displayHole ?? hole}
+                  </span>
+                  {canComment && (
+                    <span className="text-[10px] text-muted-foreground/60 ml-auto tabular-nums">
+                      {note.length}/{NOTE_MAX}
+                    </span>
+                  )}
+                </div>
+
+                {canComment ? (
+                  <>
+                    <textarea
+                      value={note}
+                      onChange={e => setNote(e.target.value.slice(0, NOTE_MAX))}
+                      rows={2}
+                      placeholder="What happened? Tee shot, trouble, a putt worth remembering…"
+                      className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm
+                                 placeholder:text-muted-foreground/50 focus:outline-none
+                                 focus:ring-2 focus:ring-primary/30 resize-none"
+                    />
+                    {/*
+                      Tapping beats typing with three people waiting on the next
+                      tee. Chips append rather than replace, so several can be
+                      stacked, and each one is a word the scorecard could not
+                      have worked out on its own.
+                    */}
+                    <div className="flex flex-wrap gap-1">
+                      {NOTE_CHIPS.map(c => (
+                        <button
+                          key={c}
+                          onPointerDown={e => e.preventDefault()}
+                          onClick={() =>
+                            setNote(prev => {
+                              const next = prev.trim() ? `${prev.trim()}, ${c}` : c;
+                              return next.slice(0, NOTE_MAX);
+                            })
+                          }
+                          className="px-2 py-1 rounded-lg text-[10px] font-medium bg-muted/60
+                                     text-muted-foreground hover:bg-muted active:scale-95 transition-all"
+                        >
+                          {c}
+                        </button>
+                      ))}
+                      {note && (
+                        <button
+                          onPointerDown={e => e.preventDefault()}
+                          onClick={() => setNote("")}
+                          className="px-2 py-1 rounded-lg text-[10px] font-medium
+                                     text-muted-foreground/70 hover:text-destructive active:scale-95 transition-all"
+                        >
+                          clear
+                        </button>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-xs text-muted-foreground/80 leading-snug">
+                    {note || "No note on this hole."}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Actions */}
