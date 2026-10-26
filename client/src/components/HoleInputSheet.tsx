@@ -191,6 +191,10 @@ export default function HoleInputSheet({
   const [mishit, setMishit] = useState<boolean>(!!initialMishit);
   const [puttWarn, setPuttWarn] = useState(false);
   const [note, setNote] = useState<string>(initialNote ?? "");
+  // Collapsed on every hole, including one that already has a note: the sheet
+  // is for scoring first, and reopening it expanded on hole 3 because hole 3
+  // was annotated earlier would push the steppers off a short screen.
+  const [noteOpen, setNoteOpen] = useState(false);
 
   // A par 3 has no tee shot to a fairway, so the control does not appear there
   const hasFairway = par >= 4;
@@ -203,6 +207,7 @@ export default function HoleInputSheet({
     setFairway(initialFairway ?? null);
     setMishit(!!initialMishit);
     setNote(initialNote ?? "");
+    setNoteOpen(false);
     setPuttWarn(false);
   }, [hole, initialStrokes, initialPutts, initialPenalties, initialFairway,
       initialMishit, initialNote, par]);
@@ -415,73 +420,102 @@ export default function HoleInputSheet({
 
             {/*
               Hole note.
-              Deliberately last: strokes and putts are the job, this is the
-              optional extra. Hidden entirely when notes are switched off, so
-              a round you just want to score looks exactly as it did before.
+
+              Collapsed by default and deliberately last: strokes and putts are
+              the job, this is the optional extra, and a textarea sitting open
+              under the steppers makes the sheet look like it wants typing on
+              every hole. One tap opens it. Hidden entirely when notes are
+              switched off, so a round you just want to score is unchanged.
+
+              px-5 matches the sheet header and the action buttons — the scroll
+              container carries no horizontal padding of its own, so a block
+              that omits it sits flush against the screen edge.
             */}
             {notesEnabled && (
-              <div className="mt-4 pt-3 border-t border-border/40 space-y-2">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-[11px] font-semibold text-muted-foreground">
+              <div className="mt-4 pt-3 px-5 border-t border-border/40">
+                <button
+                  onPointerDown={e => e.preventDefault()}
+                  onClick={() => setNoteOpen(o => !o)}
+                  className="w-full flex items-center gap-2 text-left py-1"
+                >
+                  <ChevronRight
+                    size={12}
+                    className={`shrink-0 text-muted-foreground transition-transform ${
+                      noteOpen ? "rotate-90" : ""
+                    }`}
+                  />
+                  <span className="text-[11px] font-semibold text-muted-foreground shrink-0">
                     Note for hole {displayHole ?? hole}
                   </span>
-                  {canComment && (
-                    <span className="text-[10px] text-muted-foreground/60 ml-auto tabular-nums">
+                  {/* Collapsed, the note still has to be visible — otherwise a
+                      hole you already wrote about looks blank. */}
+                  {!noteOpen && (
+                    <span className="text-[11px] text-muted-foreground/70 truncate min-w-0 flex-1">
+                      {note || (canComment ? "Add one" : "None")}
+                    </span>
+                  )}
+                  {noteOpen && canComment && (
+                    <span className="text-[10px] text-muted-foreground/60 ml-auto shrink-0 tabular-nums">
                       {note.length}/{NOTE_MAX}
                     </span>
                   )}
-                </div>
+                </button>
 
-                {canComment ? (
-                  <>
-                    <textarea
-                      value={note}
-                      onChange={e => setNote(e.target.value.slice(0, NOTE_MAX))}
-                      rows={2}
-                      placeholder="What happened? Tee shot, trouble, a putt worth remembering…"
-                      className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm
-                                 placeholder:text-muted-foreground/50 focus:outline-none
-                                 focus:ring-2 focus:ring-primary/30 resize-none"
-                    />
-                    {/*
-                      Tapping beats typing with three people waiting on the next
-                      tee. Chips append rather than replace, so several can be
-                      stacked, and each one is a word the scorecard could not
-                      have worked out on its own.
-                    */}
-                    <div className="flex flex-wrap gap-1">
-                      {NOTE_CHIPS.map(c => (
-                        <button
-                          key={c}
-                          onPointerDown={e => e.preventDefault()}
-                          onClick={() =>
-                            setNote(prev => {
-                              const next = prev.trim() ? `${prev.trim()}, ${c}` : c;
-                              return next.slice(0, NOTE_MAX);
-                            })
-                          }
-                          className="px-2 py-1 rounded-lg text-[10px] font-medium bg-muted/60
-                                     text-muted-foreground hover:bg-muted active:scale-95 transition-all"
-                        >
-                          {c}
-                        </button>
-                      ))}
-                      {note && (
-                        <button
-                          onPointerDown={e => e.preventDefault()}
-                          onClick={() => setNote("")}
-                          className="px-2 py-1 rounded-lg text-[10px] font-medium
-                                     text-muted-foreground/70 hover:text-destructive active:scale-95 transition-all"
-                        >
-                          clear
-                        </button>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <p className="text-xs text-muted-foreground/80 leading-snug">
-                    {note || "No note on this hole."}
-                  </p>
+                {noteOpen && (
+                  <div className="space-y-2 pb-1">
+                    {canComment ? (
+                      <>
+                        <textarea
+                          value={note}
+                          onChange={e => setNote(e.target.value.slice(0, NOTE_MAX))}
+                          rows={2}
+                          autoFocus
+                          placeholder="What happened? Tee shot, trouble, a putt worth remembering…"
+                          className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm
+                                     placeholder:text-muted-foreground/50 focus:outline-none
+                                     focus:ring-2 focus:ring-primary/30 resize-none"
+                        />
+                        {/*
+                          Tapping beats typing with three people waiting on the
+                          next tee. Chips append rather than replace, so several
+                          can be stacked, and each one is a word the scorecard
+                          could not have worked out on its own.
+                        */}
+                        <div className="flex flex-wrap gap-1">
+                          {NOTE_CHIPS.map(c => (
+                            <button
+                              key={c}
+                              onPointerDown={e => e.preventDefault()}
+                              onClick={() =>
+                                setNote(prev => {
+                                  const next = prev.trim() ? `${prev.trim()}, ${c}` : c;
+                                  return next.slice(0, NOTE_MAX);
+                                })
+                              }
+                              className="px-2 py-1 rounded-lg text-[10px] font-medium bg-muted/60
+                                         text-muted-foreground hover:bg-muted active:scale-95 transition-all"
+                            >
+                              {c}
+                            </button>
+                          ))}
+                          {note && (
+                            <button
+                              onPointerDown={e => e.preventDefault()}
+                              onClick={() => setNote("")}
+                              className="px-2 py-1 rounded-lg text-[10px] font-medium
+                                         text-muted-foreground/70 hover:text-destructive active:scale-95 transition-all"
+                            >
+                              clear
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    ) : (
+                      <p className="text-xs text-muted-foreground/80 leading-snug">
+                        {note || "No note on this hole."}
+                      </p>
+                    )}
+                  </div>
                 )}
               </div>
             )}

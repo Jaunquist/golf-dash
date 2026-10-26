@@ -19,25 +19,56 @@ import { Sparkles, Copy, Check, AlertCircle, Loader2 } from "lucide-react";
 import { generateSummary } from "@/lib/queryClient";
 import { buildRoundFacts, SUMMARY_SYSTEM_PROMPT, type FactSheetInput } from "@/lib/roundFacts";
 
+export interface StoredSummary {
+  text: string;
+  model: string;
+  at: string;
+  from: number;
+  to: number;
+  /** Holes complete at generation time, so staleness can be noticed. */
+  holesAt: number;
+}
+
 export default function SummaryPanel({
   canGenerate,
   holes,
   holeLabel,
   buildInput,
+  stored,
+  onStore,
+  holesComplete,
 }: {
   canGenerate: boolean;
   holes: number;
   holeLabel: (h: number) => number;
   /** Called at generate time so the sheet reflects the latest scores. */
   buildInput: (from: number, to: number) => FactSheetInput;
+  /** Last generated summary, kept on the round so it survives a reload. */
+  stored?: StoredSummary | null;
+  onStore?: (s: StoredSummary) => void;
+  /** Holes every player has posted, for the stale check. */
+  holesComplete: number;
 }) {
   const [from, setFrom] = useState(1);
   const [to, setTo] = useState(holes);
-  const [text, setText] = useState("");
-  const [meta, setMeta] = useState<{ model: string; at: string; from: number; to: number } | null>(null);
+  // Seeded from the round so reopening the page shows the last summary rather
+  // than an empty panel and a button that costs money to press again.
+  const [text, setText] = useState(stored?.text ?? "");
+  const [meta, setMeta] = useState<{ model: string; at: string; from: number; to: number } | null>(
+    stored ? { model: stored.model, at: stored.at, from: stored.from, to: stored.to } : null
+  );
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [copied, setCopied] = useState(false);
+
+  /**
+   * A summary describes the round as it stood when it was written. Keep
+   * scoring and it quietly stops being true, which matters most mid-round —
+   * exactly when this feature is used. Rather than silently refreshing (which
+   * would spend money without being asked) or silently not (which would leave
+   * a confident, wrong account on screen), it says so.
+   */
+  const stale = !!stored && holesComplete > stored.holesAt;
 
   if (!canGenerate) return null;
 
@@ -53,6 +84,10 @@ export default function SummaryPanel({
       const res = await generateSummary(facts, SUMMARY_SYSTEM_PROMPT);
       setText(res.text);
       setMeta({ model: res.model, at: res.generatedAt, from: lo, to: hi });
+      onStore?.({
+        text: res.text, model: res.model, at: res.generatedAt,
+        from: lo, to: hi, holesAt: holesComplete,
+      });
     } catch (e: any) {
       // The backend's message is the useful part — "No API key set", "HTTP 429"
       // — so it is shown rather than replaced with something reassuring.
@@ -108,7 +143,8 @@ export default function SummaryPanel({
             </select>
           </label>
           <Button onClick={run} disabled={busy} className="h-9 shrink-0">
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Generate"}
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" />
+                  : text ? "Regenerate" : "Generate"}
           </Button>
         </div>
 
@@ -127,6 +163,16 @@ export default function SummaryPanel({
         {busy && !text && (
           <p className="text-xs text-muted-foreground">
             Writing it up — this takes a few seconds.
+          </p>
+        )}
+
+        {stale && text && !busy && (
+          <p className="text-[10px] text-muted-foreground/80 leading-snug flex gap-1.5">
+            <AlertCircle className="h-3 w-3 shrink-0 mt-px" />
+            <span>
+              Holes have been scored since this was written. Regenerate to
+              include them.
+            </span>
           </p>
         )}
 
