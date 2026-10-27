@@ -465,6 +465,21 @@ export async function joinableRounds(courseName: string, date: string): Promise<
   }
 }
 
+/**
+ * Write team assignment and names onto one flight.
+ *
+ * Goes straight to Apps Script rather than through the local round store: the
+ * other flight's round is not in this device's IndexedDB and has no reason to
+ * be, so there is nothing local to patch.
+ */
+export async function setTeams(
+  roundId: string,
+  teamAssignment: number[],
+  teamNames?: Record<string, string>,
+): Promise<any> {
+  return call("setTeams", { roundId, teamAssignment, teamNames });
+}
+
 /** Every flight in one event, with scores, for the combined leaderboard. */
 export async function eventRounds(eventId: string): Promise<any> {
   return call("eventRounds", { eventId });
