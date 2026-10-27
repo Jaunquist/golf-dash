@@ -17,21 +17,12 @@ export interface HoleEntry {
   penalties: number;
   fairway: FairwayResult | null;
   mishit: boolean;
-  /**
-   * A note about the HOLE, not about this player.
-   *
-   * The sheet opens from one player's cell, but a hole has one note shared by
-   * the group — four notes per hole is friction nobody absorbs mid-round, and
-   * the interesting remark is almost always about the hole anyway. Whichever
-   * cell you opened, you are editing the same text.
-   *
-   * undefined means "this build has comments switched off, leave whatever is
-   * stored alone" — distinct from "" which means the user cleared it.
-   */
-  note?: string;
 }
 
-/** Keeps a comment to something a sheet cell and a prompt can both carry. */
+/**
+ * Kept here and exported because the scorecard's note editor uses them; the
+ * constants outlived the control they were written for.
+ */
 export const NOTE_MAX = 200;
 
 /**
@@ -42,7 +33,7 @@ export const NOTE_MAX = 200;
  * count is — what is missing is WHICH kind, which is why water and OB are
  * here and a bare "penalty" is not.
  */
-const NOTE_CHIPS = [
+export const NOTE_CHIPS = [
   "water", "OB", "trees", "bunker", "lipped out",
   "great recovery", "conceded", "lost ball",
 ];
@@ -62,12 +53,6 @@ interface HoleInputSheetProps {
   initialPenalties?: number | null;
   initialFairway?: FairwayResult | null;
   initialMishit?: boolean | null;
-  /** Current note for this hole. Undefined when comments are switched off. */
-  initialNote?: string | null;
-  /** False hides the comment block entirely — "I just want to score". */
-  notesEnabled?: boolean;
-  /** Only the round owner may write; everyone else sees it read-only. */
-  canComment?: boolean;
   onSave: (hole: number, entry: HoleEntry) => void;
   onDelete: (hole: number) => void;        // reset / clear this hole's score
   onClose: () => void;                     // close WITHOUT saving
@@ -175,9 +160,6 @@ export default function HoleInputSheet({
   initialPenalties,
   initialFairway,
   initialMishit,
-  initialNote,
-  notesEnabled = false,
-  canComment = false,
   onSave,
   onDelete,
   onClose,
@@ -190,11 +172,6 @@ export default function HoleInputSheet({
   const [fairway, setFairway] = useState<FairwayResult | null>(initialFairway ?? null);
   const [mishit, setMishit] = useState<boolean>(!!initialMishit);
   const [puttWarn, setPuttWarn] = useState(false);
-  const [note, setNote] = useState<string>(initialNote ?? "");
-  // Collapsed on every hole, including one that already has a note: the sheet
-  // is for scoring first, and reopening it expanded on hole 3 because hole 3
-  // was annotated earlier would push the steppers off a short screen.
-  const [noteOpen, setNoteOpen] = useState(false);
 
   // A par 3 has no tee shot to a fairway, so the control does not appear there
   const hasFairway = par >= 4;
@@ -206,11 +183,9 @@ export default function HoleInputSheet({
     setPenalties(initialPenalties ?? 0);
     setFairway(initialFairway ?? null);
     setMishit(!!initialMishit);
-    setNote(initialNote ?? "");
-    setNoteOpen(false);
     setPuttWarn(false);
   }, [hole, initialStrokes, initialPutts, initialPenalties, initialFairway,
-      initialMishit, initialNote, par]);
+      initialMishit, par]);
 
   const entry = (): HoleEntry => ({
     strokes,
@@ -218,9 +193,6 @@ export default function HoleInputSheet({
     penalties,
     fairway: hasFairway ? fairway : null,
     mishit: hasFairway ? mishit : false,
-    // Left undefined when this user cannot write a note, so a read-only
-    // viewer saving a score cannot blank out the owner's comment.
-    note: canComment ? note.slice(0, NOTE_MAX) : undefined,
   });
 
   const handlePuttsInc = () => {
@@ -419,106 +391,15 @@ export default function HoleInputSheet({
             </div>
 
             {/*
-              Hole note.
+              The hole note used to live here, under the steppers. It has moved
+              to its own row on the scorecard, below Points.
 
-              Collapsed by default and deliberately last: strokes and putts are
-              the job, this is the optional extra, and a textarea sitting open
-              under the steppers makes the sheet look like it wants typing on
-              every hole. One tap opens it. Hidden entirely when notes are
-              switched off, so a round you just want to score is unchanged.
-
-              px-5 matches the sheet header and the action buttons — the scroll
-              container carries no horizontal padding of its own, so a block
-              that omits it sits flush against the screen edge.
+              Two reasons. A note belongs to the hole, not to a player, but
+              opening from a player's cell made it look per-player — the same
+              box appeared under Justin and under JC and it was not obvious
+              they were one field. And saving it alongside the score fired two
+              writes at the same moment, which is how it kept disappearing.
             */}
-            {notesEnabled && (
-              <div className="mt-4 pt-3 px-5 border-t border-border/40">
-                <button
-                  onPointerDown={e => e.preventDefault()}
-                  onClick={() => setNoteOpen(o => !o)}
-                  className="w-full flex items-center gap-2 text-left py-1"
-                >
-                  <ChevronRight
-                    size={12}
-                    className={`shrink-0 text-muted-foreground transition-transform ${
-                      noteOpen ? "rotate-90" : ""
-                    }`}
-                  />
-                  <span className="text-[11px] font-semibold text-muted-foreground shrink-0">
-                    Note for hole {displayHole ?? hole}
-                  </span>
-                  {/* Collapsed, the note still has to be visible — otherwise a
-                      hole you already wrote about looks blank. */}
-                  {!noteOpen && (
-                    <span className="text-[11px] text-muted-foreground/70 truncate min-w-0 flex-1">
-                      {note || (canComment ? "Add one" : "None")}
-                    </span>
-                  )}
-                  {noteOpen && canComment && (
-                    <span className="text-[10px] text-muted-foreground/60 ml-auto shrink-0 tabular-nums">
-                      {note.length}/{NOTE_MAX}
-                    </span>
-                  )}
-                </button>
-
-                {noteOpen && (
-                  <div className="space-y-2 pb-1">
-                    {canComment ? (
-                      <>
-                        <textarea
-                          value={note}
-                          onChange={e => setNote(e.target.value.slice(0, NOTE_MAX))}
-                          rows={2}
-                          autoFocus
-                          placeholder="What happened? Tee shot, trouble, a putt worth remembering…"
-                          className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm
-                                     placeholder:text-muted-foreground/50 focus:outline-none
-                                     focus:ring-2 focus:ring-primary/30 resize-none"
-                        />
-                        {/*
-                          Tapping beats typing with three people waiting on the
-                          next tee. Chips append rather than replace, so several
-                          can be stacked, and each one is a word the scorecard
-                          could not have worked out on its own.
-                        */}
-                        <div className="flex flex-wrap gap-1">
-                          {NOTE_CHIPS.map(c => (
-                            <button
-                              key={c}
-                              onPointerDown={e => e.preventDefault()}
-                              onClick={() =>
-                                setNote(prev => {
-                                  const next = prev.trim() ? `${prev.trim()}, ${c}` : c;
-                                  return next.slice(0, NOTE_MAX);
-                                })
-                              }
-                              className="px-2 py-1 rounded-lg text-[10px] font-medium bg-muted/60
-                                         text-muted-foreground hover:bg-muted active:scale-95 transition-all"
-                            >
-                              {c}
-                            </button>
-                          ))}
-                          {note && (
-                            <button
-                              onPointerDown={e => e.preventDefault()}
-                              onClick={() => setNote("")}
-                              className="px-2 py-1 rounded-lg text-[10px] font-medium
-                                         text-muted-foreground/70 hover:text-destructive active:scale-95 transition-all"
-                            >
-                              clear
-                            </button>
-                          )}
-                        </div>
-                      </>
-                    ) : (
-                      <p className="text-xs text-muted-foreground/80 leading-snug">
-                        {note || "No note on this hole."}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
           </div>
 
           {/* Actions */}
