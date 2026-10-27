@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import HoleInputSheet, { type HoleEntry } from "@/components/HoleInputSheet";
+import HoleInputSheet, { type HoleEntry, NOTE_MAX, NOTE_CHIPS } from "@/components/HoleInputSheet";
 import { useParams, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
@@ -214,8 +214,35 @@ export default function Scorecard() {
    * the local-first path: IndexedDB first, Sheet in the background. Leaving the
    * page, closing the app, or being on a course with no signal all survive it.
    */
-  const holeNotes: Record<string, string> = gameOptsRaw?.holeNotes ?? {};
-  const notesEnabled: boolean = gameOptsRaw?.notesEnabled === true;
+  const holeNotesRaw: Record<string, string> = gameOptsRaw?.holeNotes ?? {};
+  const notesEnabledRaw: boolean = gameOptsRaw?.notesEnabled === true;
+
+  /**
+   * Local overrides, so the screen moves on the tap.
+   *
+   * Everything here persists through a PATCH that then refetches the round, a
+   * round trip of a second or more. Waiting for it before rendering is why
+   * switching notes on and starting to type both felt sluggish. These hold the
+   * new value until the server echoes it back, then stand down.
+   */
+  const [notesLocal, setNotesLocal] = useState<Record<string, string> | null>(null);
+  const [notesOnLocal, setNotesOnLocal] = useState<boolean | null>(null);
+  const [noteHole, setNoteHole] = useState<number | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
+
+  const holeNotes = notesLocal ?? holeNotesRaw;
+  const notesEnabled = notesOnLocal ?? notesEnabledRaw;
+
+  // Drop an override once the round comes back carrying it, so the server
+  // stays the source of truth and a failed write is not papered over forever.
+  useEffect(() => {
+    if (notesLocal && JSON.stringify(holeNotesRaw) === JSON.stringify(notesLocal)) {
+      setNotesLocal(null);
+    }
+  }, [holeNotesRaw, notesLocal]);
+  useEffect(() => {
+    if (notesOnLocal != null && notesEnabledRaw === notesOnLocal) setNotesOnLocal(null);
+  }, [notesEnabledRaw, notesOnLocal]);
 
   const patchGameOptions = useCallback((mutate: (cur: any) => any) => {
     if (!data?.round) return Promise.resolve();
@@ -245,12 +272,68 @@ export default function Scorecard() {
   }, [holeNotes, patchGameOptions]);
 
   const toggleNotesEnabled = useCallback(() => {
-    patchGameOptions(cur => ({ ...cur, notesEnabled: !(cur.notesEnabled === true) }));
-  }, [patchGameOptions]);
+    const next = !notesEnabled;
+    setNotesOnLocal(next);
+    patchGameOptions(cur => ({ ...cur, notesEnabled: next }));
+  }, [notesEnabled, patchGameOptions]);
 
-  // Purely a view preference, so it stays local — collapsing the row on one
+  // Purely view preferences, so they stay local — collapsing a section on one
   // phone should not collapse it on the other flight's.
   const [notesRowOpen, setNotesRowOpen] = useState(false);
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const [courseNotesOpen, setCourseNotesOpen] = useState(false);
+
+  /**
+   * The note editor, opened from the Notes row.
+   *
+   * Local draft, committed on close. The toggle and the editor both used to
+   * wait on a server round trip before the UI moved, which is why starting a
+   * note felt slow — the field could not appear until the PATCH came back and
+   * the round refetched. Both are optimistic now: the screen updates at once
+   * and the write follows.
+   */
+  /**
+   * Android back leaves the scorecard in one tap, which mid-round means losing
+   * your place with a thumb brush. This puts one dummy entry on the history
+   * stack: the first back consumes it and warns, a second within three seconds
+   * actually leaves.
+   *
+   * Only while there is nothing else open — a back press with a sheet up
+   * should close the sheet, which is what the user means by it.
+   */
+  const backArmed = useRef(false);
+  useEffect(() => {
+    window.history.pushState({ golfDashGuard: true }, "");
+    const onPop = () => {
+      if (backArmed.current) return;              // second press: let it through
+      backArmed.current = true;
+      window.history.pushState({ golfDashGuard: true }, "");
+      toast({ title: "Press back again to leave", description: "Your scores are saved." });
+      setTimeout(() => { backArmed.current = false; }, 3000);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [toast]);
+
+  const openNoteEditor = useCallback((hole: number) => {
+    setNoteHole(hole);
+    setNoteDraft(holeNotes[String(hole)] ?? "");
+  }, [holeNotes]);
+
+  const commitNote = useCallback(() => {
+    if (noteHole == null) return;
+    const trimmed = noteDraft.trim().slice(0, NOTE_MAX);
+    // Paint it immediately, then persist. The row's icon fills in on the tap
+    // rather than a second later when the sheet answers.
+    setNotesLocal(prev => {
+      const base = { ...(prev ?? holeNotes) };
+      if (trimmed) base[String(noteHole)] = trimmed;
+      else delete base[String(noteHole)];
+      return base;
+    });
+    saveHoleNote(noteHole, trimmed);
+    setNoteHole(null);
+  }, [noteHole, noteDraft, holeNotes, saveHoleNote]);
   const isSoloGhost = gameOptsRaw?.solo === true && gameOptsRaw?.ghost === true;
   const { data: ghostData } = useQuery<{ scores: Record<number, { strokes: number; roundDate: string }>; roundCount: number }>({
     queryKey: ["/api/courses", data?.round?.courseId, "ghost"],
@@ -738,6 +821,45 @@ export default function Scorecard() {
               })}
               <td className="text-center px-1 text-xs text-primary font-semibold">{sectionPar}</td>
             </tr>
+
+            )}
+            {/*
+              Hole notes, as a row of their own below Points.
+
+              This is where a per-hole thing belongs. It was previously inside
+              the per-player stepper, where the same note appeared under every
+              player and read as four separate fields. One row, one icon per
+              hole, filled in when there is something to read.
+            */}
+            {notesEnabled && (
+              <tr className="border-b border-border/50 bg-accent/[0.04]">
+                <td className="px-2 py-1 text-[10px] font-semibold text-muted-foreground
+                               sticky left-0 z-[5] bg-card
+                               [background-image:linear-gradient(hsl(var(--accent)/0.04),hsl(var(--accent)/0.04))]
+                               shadow-[1px_0_0_0_hsl(var(--border))]">
+                  Notes
+                </td>
+                {holeList.map(h => {
+                  const has = !!holeNotes[String(h)];
+                  return (
+                    <td key={h} className="text-center py-1">
+                      <button
+                        onClick={() => openNoteEditor(h)}
+                        className="inline-flex items-center justify-center h-6 w-6 rounded-md
+                                   hover:bg-accent/15 active:scale-90 transition-all"
+                        aria-label={`Note for hole ${holeLabel(h)}`}
+                      >
+                        <StickyNote
+                          size={12}
+                          className={has ? "text-accent" : "text-muted-foreground/25"}
+                          fill={has ? "currentColor" : "none"}
+                        />
+                      </button>
+                    </td>
+                  );
+                })}
+                <td />
+              </tr>
             )}
           </tbody>
         </table>
@@ -1837,6 +1959,16 @@ export default function Scorecard() {
           money on an external API. The fact sheet is built at generate time,
           not here, so it always reflects the scores as they stand.
         */}
+        <div>
+          <button
+            onClick={() => setSummaryOpen(o => !o)}
+            className="flex items-center gap-1.5 mb-2 text-xs font-semibold uppercase
+                       tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <ChevronRight size={12} className={`transition-transform ${summaryOpen ? "rotate-90" : ""}`} />
+            Round summary
+          </button>
+          {summaryOpen && (
         <SummaryPanel
           canGenerate={admin && !readOnly}
           holes={holes}
@@ -1886,12 +2018,23 @@ export default function Scorecard() {
             };
           }}
         />
+          )}
+        </div>
 
         {/* Notes — saved with the round, synced to the sheet */}
         <div>
-          <h2 className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wider flex items-center gap-1.5">
-            <StickyNote size={12} /> Notes
-          </h2>
+          <button
+            onClick={() => setCourseNotesOpen(o => !o)}
+            className="flex items-center gap-1.5 mb-2 text-xs font-semibold uppercase
+                       tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <ChevronRight size={12} className={`transition-transform ${courseNotesOpen ? "rotate-90" : ""}`} />
+            Course notes
+            {!courseNotesOpen && notes.trim() && (
+              <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+            )}
+          </button>
+          {courseNotesOpen && (<>
           <textarea
             data-testid="input-round-notes"
             value={notes}
@@ -1906,8 +2049,77 @@ export default function Scorecard() {
           <p className="text-[10px] text-muted-foreground mt-1">
             {notesSaved ? "Saved" : "Saves when you tap away"}
           </p>
+          </>)}
         </div>
       </main>
+
+      {/*
+        Hole note editor.
+
+        Opened from the Notes row, so it is unambiguously about the hole rather
+        than about whichever player's cell was tapped. Commits on close through
+        its own write, which no longer races the score save.
+      */}
+      <Sheet open={noteHole !== null} onOpenChange={o => { if (!o) commitNote(); }}>
+        <SheetContent side="bottom" className="rounded-t-2xl">
+          <SheetHeader className="mb-3">
+            <SheetTitle className="flex items-center gap-2 text-base">
+              <StickyNote size={16} className="text-accent" />
+              Note for hole {noteHole != null ? holeLabel(noteHole) : ""}
+            </SheetTitle>
+            <SheetDescription className="text-[11px]">
+              One note per hole, shared by everyone on the card.
+            </SheetDescription>
+          </SheetHeader>
+
+          {readOnly ? (
+            <p className="text-sm text-muted-foreground">{noteDraft || "No note on this hole."}</p>
+          ) : (
+            <div className="space-y-2">
+              <textarea
+                value={noteDraft}
+                onChange={e => setNoteDraft(e.target.value.slice(0, NOTE_MAX))}
+                rows={3}
+                autoFocus
+                placeholder="What happened? Tee shot, trouble, a putt worth remembering…"
+                className="w-full rounded-xl border border-border bg-background px-3 py-2 text-sm
+                           placeholder:text-muted-foreground/50 focus:outline-none
+                           focus:ring-2 focus:ring-primary/30 resize-none"
+              />
+              <div className="flex flex-wrap gap-1">
+                {NOTE_CHIPS.map(c => (
+                  <button
+                    key={c}
+                    onPointerDown={e => e.preventDefault()}
+                    onClick={() => setNoteDraft(prev =>
+                      (prev.trim() ? `${prev.trim()}, ${c}` : c).slice(0, NOTE_MAX))}
+                    className="px-2 py-1 rounded-lg text-[10px] font-medium bg-muted/60
+                               text-muted-foreground hover:bg-muted active:scale-95 transition-all"
+                  >
+                    {c}
+                  </button>
+                ))}
+                {noteDraft && (
+                  <button
+                    onPointerDown={e => e.preventDefault()}
+                    onClick={() => setNoteDraft("")}
+                    className="px-2 py-1 rounded-lg text-[10px] font-medium
+                               text-muted-foreground/70 hover:text-destructive active:scale-95 transition-all"
+                  >
+                    clear
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2 pt-1">
+                <span className="text-[10px] text-muted-foreground/60 tabular-nums">
+                  {noteDraft.length}/{NOTE_MAX}
+                </span>
+                <Button className="ml-auto h-9" onClick={commitNote}>Save note</Button>
+              </div>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
 
       {/* Manage Players Sheet */}
       <Sheet open={managePanelOpen} onOpenChange={setManagePanelOpen}>
@@ -2381,11 +2593,6 @@ export default function Scorecard() {
             initialPenalties={stored?.penalties ?? null}
             initialFairway={(stored?.fairway as FairwayResult | null) ?? null}
             initialMishit={stored?.mishit ? true : false}
-            initialNote={holeNotes[String(sheetHole)] ?? ""}
-            notesEnabled={notesEnabled}
-            // Writing a comment is writing to the round, so it follows the
-            // round's own permission rather than inventing a second one.
-            canComment={!readOnly}
             onSave={handleSheetSave}
             onDelete={handleSheetDelete}
             onClose={() => setSheetOpen(false)}
