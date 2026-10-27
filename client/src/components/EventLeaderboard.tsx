@@ -63,8 +63,18 @@ const flightColor = (i: number) => FLIGHT_COLORS[i % FLIGHT_COLORS.length];
 
 /** Formats whose standings are per player and pool across the whole field. */
 const POOLED_INDIVIDUAL: GameType[] = ["stableford", "quota", "skins"];
-/** Formats whose standings are per team and pool across the whole field. */
-const POOLED_TEAM: GameType[] = ["best_ball"];
+/**
+ * Formats whose standings are per team and pool across the whole field.
+ *
+ * match_play belongs here and was wrongly left out. In this engine match_play
+ * IS the team game — it shares a case with best_ball and settles each hole by
+ * comparing one side's best ball against the other's. With teams spanning both
+ * flights that is a coherent four-against-four match, so there is nothing to
+ * keep per-flight about it. The format that genuinely cannot combine is
+ * match_play_indiv, where everyone plays for themselves and the people in the
+ * other flight never played you.
+ */
+const POOLED_TEAM: GameType[] = ["best_ball", "match_play"];
 
 /**
  * Formats that settle a hole only once every pooled player has played it
@@ -72,7 +82,7 @@ const POOLED_TEAM: GameType[] = ["best_ball"];
  * the course the board legitimately sits still until the slower group catches
  * up, and that looks identical to a sync failure if nobody explains it.
  */
-const WAITS_FOR_FIELD: GameType[] = ["skins", "best_ball"];
+const WAITS_FOR_FIELD: GameType[] = ["skins", "best_ball", "match_play"];
 
 type FlightRow = { round: any; players: any[] };
 
