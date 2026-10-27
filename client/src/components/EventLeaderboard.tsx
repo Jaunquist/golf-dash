@@ -29,9 +29,9 @@
  * than inventing a number.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { eventRounds } from "@/lib/queryClient";
+import { eventRounds, setTeams, isAdmin } from "@/lib/queryClient";
 import {
   computeGameResults,
   cumulativeTotals,
@@ -41,7 +41,7 @@ import {
   type GameOptions,
 } from "@/lib/gameEngine";
 import { Link } from "wouter";
-import { Trophy, Users, Info, RefreshCw, ExternalLink } from "lucide-react";
+import { Trophy, Users, Info, RefreshCw, ExternalLink, Pencil } from "lucide-react";
 
 /**
  * One colour per flight, used on the flight tag beside a player's name and on
@@ -85,6 +85,12 @@ const POOLED_TEAM: GameType[] = ["best_ball", "match_play"];
 const WAITS_FOR_FIELD: GameType[] = ["skins", "best_ball", "match_play"];
 
 type FlightRow = { round: any; players: any[] };
+
+/** A team's name if one was given, else "Team 1". */
+function teamLabel(n: number, names?: Record<string, string>): string {
+  const given = names?.[String(n)]?.trim();
+  return given || (n === 3 ? "Solo" : `Team ${n}`);
+}
 
 function firstName(s: string): string {
   return String(s || "").trim().split(/\s+/)[0] || "—";
@@ -134,6 +140,22 @@ export default function EventLeaderboard({
 
   const flights: FlightRow[] = data?.rounds ?? [];
 
+  /**
+   * Event-level team editing.
+   *
+   * Teams span flights but are stored per flight, so arranging eight players
+   * into two sides means writing two rounds. Doing it from each flight's own
+   * game settings works but needs both owners to pick numbering that happens
+   * to line up — one of them calling his pair "Team 1" meaning the other side
+   * silently produces a merged mess. This edits all of them from one screen
+   * and writes each flight, so the numbering cannot disagree.
+   */
+  const [editing, setEditing] = useState(false);
+  const [draftTeams, setDraftTeams] = useState<Record<string, number>>({});
+  const [draftNames, setDraftNames] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState("");
+
   const board = useMemo(() => {
     if (flights.length < 2) return null;
 
@@ -153,9 +175,19 @@ export default function EventLeaderboard({
       flightLabel: string;
       roundId: string;
       team: number;
+      /**
+       * Index within the flight's FULL player list, scorecard-only players
+       * included. teamAssignment is stored against that ordering, so writing
+       * it back from a list that skipped anyone would shift every player after
+       * the gap onto the wrong side.
+       */
+      orderIdx: number;
+      /** How long the flight's teamAssignment array has to be. */
+      flightSize: number;
     }[] = [];
 
     const grossScores: Record<string, Record<number, number | null>> = {};
+    const names: Record<string, string> = {};
 
     flights.forEach((f, flightIdx) => {
       const inOrder = [...(f.players || [])].sort(
@@ -176,13 +208,22 @@ export default function EventLeaderboard({
        * This is a defensible default, not a stated intention, so the panel
        * prints how it read the teams and lets a wrong grouping be seen.
        */
-      let fOpts: GameOptions = {};
+      let fOpts: any = {};
       try {
         fOpts = JSON.parse(String(f.round?.game_options || "{}")) as GameOptions;
       } catch {
         fOpts = {};
       }
       const ta = Array.isArray(fOpts.teamAssignment) ? fOpts.teamAssignment : null;
+      if (fOpts.teamNames && typeof fOpts.teamNames === "object") {
+        // Later flights win only where earlier ones said nothing, so one
+        // flight naming the sides is enough for the whole event.
+        Object.keys(fOpts.teamNames).forEach(k => {
+          if (!names[k] && String(fOpts.teamNames[k] || "").trim()) {
+            names[k] = String(fOpts.teamNames[k]).trim();
+          }
+        });
+      }
 
       const label = `Flight ${flightIdx + 1}`;
 
@@ -207,6 +248,8 @@ export default function EventLeaderboard({
           flightLabel: label,
           roundId: String(f.round?.id ?? ""),
           team,
+          orderIdx: i,
+          flightSize: inOrder.length,
         });
 
         grossScores[id] = {};
@@ -313,7 +356,8 @@ export default function EventLeaderboard({
         byTeam.set(p.team, cur);
       });
       const rows = [...byTeam.values()].sort((a, b) => b.points - a.points);
-      return { combinable: true as const, kind: "team" as const, rows, settled, perFlight, flightCount: flights.length };
+      return { combinable: true as const, kind: "team" as const, rows, settled, perFlight,
+               teamNames: names, roster: pooled, flightCount: flights.length };
     }
 
     const rows = pooled
@@ -335,7 +379,8 @@ export default function EventLeaderboard({
       })
       .sort((a, b) => b.sortKey - a.sortKey);
 
-    return { combinable: true as const, kind: "individual" as const, rows, settled, perFlight, flightCount: flights.length };
+    return { combinable: true as const, kind: "individual" as const, rows, settled, perFlight,
+             teamNames: names, roster: pooled, flightCount: flights.length };
   }, [flights, gameType, gameOptions, pars, holeHandicaps, holes, currentRoundId]);
 
   // A solo flight is not an event yet. Every round mints an event id so a
@@ -365,9 +410,24 @@ export default function EventLeaderboard({
         <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Combined · {board.combinable ? `${board.flightCount} flights` : "all flights"}
         </h2>
+        {isAdmin() && board.combinable && !editing && (
+          <button
+            onClick={() => {
+              const t: Record<string, number> = {};
+              board.roster.forEach(p => { t[String(p.g.id)] = p.team; });
+              setDraftTeams(t);
+              setDraftNames({ ...(board.teamNames ?? {}) });
+              setEditing(true);
+            }}
+            className="ml-auto inline-flex items-center gap-1 text-[10px] text-muted-foreground
+                       hover:text-foreground transition-colors"
+          >
+            <Pencil className="h-3 w-3" /> Teams
+          </button>
+        )}
         <button
           onClick={() => refetch()}
-          className="ml-auto inline-flex items-center gap-1 text-[10px] text-muted-foreground
+          className="inline-flex items-center gap-1 text-[10px] text-muted-foreground
                      hover:text-foreground transition-colors disabled:opacity-50"
           disabled={isFetching}
           aria-label="Refresh the combined leaderboard"
@@ -376,6 +436,107 @@ export default function EventLeaderboard({
           {isFetching ? "Checking" : "Refresh"}
         </button>
       </div>
+
+      {editing && board.combinable && (
+        <div className="px-4 pb-3 space-y-3 border-b border-border/60">
+          <div className="grid grid-cols-2 gap-2">
+            {[1, 2].map(t => (
+              <label key={t} className="min-w-0">
+                <span className="block text-[10px] text-muted-foreground mb-1">
+                  Team {t} name
+                </span>
+                <input
+                  value={draftNames[String(t)] ?? ""}
+                  onChange={e => setDraftNames(p => ({ ...p, [String(t)]: e.target.value.slice(0, 24) }))}
+                  placeholder={`Team ${t}`}
+                  className="w-full h-8 rounded-lg border border-border bg-background px-2 text-sm"
+                />
+              </label>
+            ))}
+          </div>
+
+          {board.perFlight.map(f => (
+            <div key={f.idx} className="space-y-1">
+              <div className={`text-[10px] font-medium ${flightColor(f.idx).text}`}>{f.label}</div>
+              {board.roster.filter(p => p.flightIdx === f.idx).map(p => {
+                const cur = draftTeams[String(p.g.id)] ?? p.team;
+                return (
+                  <div key={String(p.g.id)} className="flex items-center gap-2">
+                    <span className="text-xs truncate flex-1 min-w-0">{p.g.name}</span>
+                    <div className="flex gap-1 shrink-0">
+                      {[1, 2].map(t => (
+                        <button
+                          key={t}
+                          onClick={() => setDraftTeams(d => ({ ...d, [String(p.g.id)]: t }))}
+                          className={`px-2 py-1 rounded-lg text-[10px] font-semibold border transition-colors ${
+                            cur === t
+                              ? "border-primary bg-primary/10 text-primary"
+                              : "border-border text-muted-foreground"
+                          }`}
+                        >
+                          {draftNames[String(t)]?.trim() || `T${t}`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+
+          {saveErr && <p className="text-[11px] text-destructive leading-snug">{saveErr}</p>}
+
+          <div className="flex gap-2">
+            <button
+              onClick={() => { setEditing(false); setSaveErr(""); }}
+              className="text-[11px] text-muted-foreground hover:text-foreground"
+            >
+              Cancel
+            </button>
+            <button
+              disabled={saving}
+              onClick={async () => {
+                setSaving(true);
+                setSaveErr("");
+                try {
+                  const names: Record<string, string> = {};
+                  [1, 2].forEach(t => {
+                    const v = draftNames[String(t)]?.trim();
+                    if (v) names[String(t)] = v;
+                  });
+                  // One write per flight, each carrying only its own players
+                  // in that flight's playing order — which is the index space
+                  // teamAssignment is read back in.
+                  for (const f of board.perFlight) {
+                    const mine = board.roster.filter(p => p.flightIdx === f.idx);
+                    if (!mine.length) continue;
+                    // Full-length array positioned by orderIdx. A flight with
+                    // a scorecard-only player has a gap in the in-game list,
+                    // and a dense array would put everyone after it on the
+                    // wrong team. Gaps default to 1, which is what the engine
+                    // falls back to for an unspecified slot.
+                    const ta = new Array(mine[0].flightSize).fill(1);
+                    mine.forEach(p => {
+                      ta[p.orderIdx] = draftTeams[String(p.g.id)] ?? p.team;
+                    });
+                    await setTeams(f.roundId, ta, names);
+                  }
+                  setEditing(false);
+                  refetch();
+                } catch (e: any) {
+                  setSaveErr(String(e?.message || e || "Couldn't save teams"));
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              className="ml-auto px-3 py-1.5 rounded-lg text-[11px] font-semibold
+                         bg-primary text-primary-foreground disabled:opacity-50"
+            >
+              {saving ? "Saving…" : "Save teams"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {!board.combinable ? (
         <div className="px-4 pb-4">
@@ -397,7 +558,9 @@ export default function EventLeaderboard({
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5">
                         <Users className="h-3 w-3 text-muted-foreground shrink-0" />
-                        <span className="text-sm font-medium truncate">Team {r.team}</span>
+                        <span className="text-sm font-medium truncate">
+                          {teamLabel(r.team, board.teamNames)}
+                        </span>
                       </div>
                       <div className="text-[10px] truncate mt-0.5">
                         {r.members.map((m, mi) => (
