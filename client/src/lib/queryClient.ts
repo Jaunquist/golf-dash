@@ -1220,15 +1220,52 @@ async function createRound(payload: any): Promise<{ round: Round; players: Round
   return { round, players };
 }
 
+/**
+ * One writer at a time per round.
+ *
+ * VERIFY: per-round-write-queue
+ *
+ * Every mutation here is a read-modify-write: load the whole round record,
+ * change one part, save the whole thing back. Two of those overlapping is a
+ * lost update, because each saves the stale copy of whatever the other
+ * changed.
+ *
+ * That is exactly what ate the hole notes. Saving a hole fired two writes at
+ * once — the score through setScore and the note through patchRound. Both
+ * loaded the same snapshot; whichever finished last wrote its own field onto
+ * the other's stale copy. When setScore landed second it put back the round
+ * as it was BEFORE the note, so the note vanished on reload while the score
+ * stayed. Nothing errored, which is why it looked like the note was never
+ * saved rather than saved and then overwritten.
+ *
+ * Chaining them per round id makes each load see the previous save. Writes to
+ * different rounds still run in parallel, and a failure does not stall the
+ * queue behind it.
+ */
+const roundWriteQueue = new Map<string, Promise<unknown>>();
+
+function serializeWrite<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const prev = roundWriteQueue.get(id) ?? Promise.resolve();
+  const next = prev.then(fn, fn);          // run even if the previous one threw
+  roundWriteQueue.set(id, next.catch(() => {}));
+  return next;
+}
+
 async function patchRound(id: string, patch: Partial<Round>): Promise<Round> {
-  const s = await load(id);
-  if (!s) throw new Error("Round not found");
-  const round = { ...s.round, ...patch };
-  await save({ ...s, round });
-  return round;
+  return serializeWrite(id, async () => {
+    const s = await load(id);
+    if (!s) throw new Error("Round not found");
+    const round = { ...s.round, ...patch };
+    await save({ ...s, round });
+    return round;
+  });
 }
 
 async function setScore(roundId: string, b: any): Promise<HoleScore> {
+  return serializeWrite(roundId, () => setScoreInner(roundId, b));
+}
+
+async function setScoreInner(roundId: string, b: any): Promise<HoleScore> {
   const s = await load(roundId);
   if (!s) throw new Error("Round not found");
   const playerId = String(b.playerId), hole = Number(b.hole);
@@ -1252,6 +1289,10 @@ async function setScore(roundId: string, b: any): Promise<HoleScore> {
 }
 
 async function addPlayer(roundId: string, b: any): Promise<RoundPlayer> {
+  return serializeWrite(roundId, () => addPlayerInner(roundId, b));
+}
+
+async function addPlayerInner(roundId: string, b: any): Promise<RoundPlayer> {
   const s = await load(roundId);
   if (!s) throw new Error("Round not found");
   const p: RoundPlayer = {
@@ -1265,6 +1306,10 @@ async function addPlayer(roundId: string, b: any): Promise<RoundPlayer> {
 }
 
 async function removePlayer(roundId: string, playerId: string) {
+  return serializeWrite(roundId, () => removePlayerInner(roundId, playerId));
+}
+
+async function removePlayerInner(roundId: string, playerId: string) {
   const s = await load(roundId);
   if (!s) throw new Error("Round not found");
   await save({
@@ -1276,6 +1321,10 @@ async function removePlayer(roundId: string, playerId: string) {
 }
 
 async function patchPlayer(roundId: string, playerId: string, b: any): Promise<RoundPlayer> {
+  return serializeWrite(roundId, () => patchPlayerInner(roundId, playerId, b));
+}
+
+async function patchPlayerInner(roundId: string, playerId: string, b: any): Promise<RoundPlayer> {
   const s = await load(roundId);
   if (!s) throw new Error("Round not found");
   const players = s.players.map(p => p.id === playerId ? { ...p, ...b } : p);
