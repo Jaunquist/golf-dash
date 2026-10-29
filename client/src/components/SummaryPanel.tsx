@@ -48,6 +48,8 @@ export default function SummaryPanel({
   onStore?: (s: StoredSummary) => void;
   /** Holes every player has posted, for the stale check. */
   holesComplete: number;
+  /** How many holes carry a note, for the nudge below. */
+  noteCount?: number;
 }) {
   const [from, setFrom] = useState(1);
   const [to, setTo] = useState(holes);
@@ -152,6 +154,22 @@ export default function SummaryPanel({
           Set both to the same hole for one hole on its own. Written from the
           scores and your hole notes — holes without a note stay factual.
         </p>
+
+        {/*
+          The scores give it what happened; only a note gives it why. A round
+          with none produces an accurate but flat recital, and the difference
+          is worth saying once rather than leaving the user to conclude the
+          feature is dull.
+        */}
+        {holesComplete >= 3 && (noteCount ?? 0) === 0 && (
+          <p className="text-[10px] text-muted-foreground/70 leading-snug flex gap-1.5">
+            <AlertCircle className="h-3 w-3 shrink-0 mt-px" />
+            <span>
+              No hole notes yet. The scores say what happened; a note is the
+              only way it learns why — a chip-in, a lost ball, a gimme.
+            </span>
+          </p>
+        )}
 
         {err && (
           <div className="flex gap-1.5 rounded-lg bg-destructive/10 px-2.5 py-2">
