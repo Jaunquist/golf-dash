@@ -1977,6 +1977,7 @@ export default function Scorecard() {
           onStore={s => patchGameOptions(cur => ({ ...cur, summary: s }))}
           // Holes every player has posted. Used only to notice that a stored
           // summary has been overtaken by more scoring.
+          noteCount={Object.keys(holeNotes).length}
           holesComplete={(() => {
             let n = 0;
             for (let h = 1; h <= holes; h++) {
@@ -2015,6 +2016,9 @@ export default function Scorecard() {
               holeNotes,
               from, to,
               gameLabel: GAME_LABELS[round.gameType] ?? round.gameType,
+              isTeamGame,
+              teamAssignment: gameOpts?.teamAssignment,
+              teamNames: gameOpts?.teamNames,
             };
           }}
         />
