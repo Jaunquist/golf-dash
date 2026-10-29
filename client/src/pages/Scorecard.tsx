@@ -1971,6 +1971,13 @@ export default function Scorecard() {
           {summaryOpen && (
         <SummaryPanel
           canGenerate={admin && !readOnly}
+          blockedReason={
+            !admin
+              ? "Only the admin account can generate summaries. If that's you, this device's saved sign-in may predate the role — refresh it below."
+              : readOnly
+                ? "You're viewing this round, not editing it."
+                : undefined
+          }
           holes={holes}
           holeLabel={holeLabel}
           stored={gameOpts?.summary ?? null}
